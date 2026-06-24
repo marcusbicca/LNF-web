@@ -14,10 +14,17 @@ export interface FornecedorData {
 export interface ItemSAP {
   referencias: Record<string, FatorEntry[]>
   descricao: string
+  aliasReferencias?: Record<string, string>
+  UmbMigo?: string
 }
 
+// Conversão de UMB gravada em itens.json. Espelha CadastroConversao do
+// LNF-Coreon: chaves minúsculas; `de`/`para` só quando não-vazios; `fator`
+// só quando ≠ 0 e ≠ 1 (lista vazia = referência sem conversão).
 export interface FatorEntry {
-  fator: number
+  de?: string
+  para?: string
+  fator?: number
 }
 
 // ── Cadastro JSON (output do LNF-Coreon) ────────────────────────────────────

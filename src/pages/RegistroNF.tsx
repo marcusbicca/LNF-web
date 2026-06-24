@@ -1,6 +1,7 @@
 import { useCallback, useState } from 'react'
 import { useApp } from '../context/AppContext'
 import type { CadastroJson, FatorEntry, ItemAnalise, ItensJson, PedidoItem } from '../types'
+import { format, parseLenient } from '../utils/json'
 
 // ── Lógica de análise ────────────────────────────────────────────────────────
 
@@ -28,7 +29,7 @@ function analisarItens(
       if (refExiste && itemData) {
         status = 'existe'
         const fatores: FatorEntry[] = itemData.referencias[pedido['Referência']]
-        fator = fatores.length > 0 ? fatores[0].fator : null
+        fator = fatores.length > 0 ? fatores[0].fator ?? null : null
       } else if (fornData) {
         // Checa se a referência existe em outro código SAP do mesmo fornecedor
         for (const [cod, item] of Object.entries(fornData.Itens)) {
@@ -37,7 +38,7 @@ function analisarItens(
             const fatores: FatorEntry[] = item.referencias[pedido['Referência']]
             conflito = {
               codigoExistente: cod,
-              fatorExistente: fatores.length > 0 ? fatores[0].fator : null,
+              fatorExistente: fatores.length > 0 ? fatores[0].fator ?? null : null,
             }
             break
           }
@@ -97,8 +98,9 @@ export function RegistroNF() {
     (texto: string) => {
       setErroJson(null)
       try {
-        const parsed = JSON.parse(texto) as CadastroJson
+        const parsed = parseLenient<CadastroJson>(texto)
         if (!parsed.PedidosDict) throw new Error('Campo PedidosDict ausente — JSON inválido')
+        setJsonTexto(format(parsed))
         setCadastro(parsed)
         if (itens) setItensAnalise(analisarItens(parsed.PedidosDict, itens))
       } catch (e) {
