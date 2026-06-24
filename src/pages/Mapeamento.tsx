@@ -31,7 +31,7 @@ interface ItemNf {
 
 interface ItemPedido {
   id: string
-  nfChave: string
+  fornecedor: string
   deduKey: string
   pedido: string
   item: string
@@ -130,13 +130,12 @@ function carregarDados(dict: Record<string, PedidoItem[]>): CargaResultado {
         dbl(linha, 'Qtd NF') === 0
       ) {
         const item = str(linha, 'Item')
-        const nfChave = str(linha, 'NfChave')
-        const deduKey = nfChave + '|' + pedido + '|' + item
+        const deduKey = pedido + '|' + item
         let ip = cb2Dict.get(deduKey)
         if (!ip) {
           ip = {
             id: 'ped:' + deduKey,
-            nfChave,
+            fornecedor: str(linha, 'Fornecedor'),
             deduKey,
             pedido,
             item,
@@ -280,11 +279,16 @@ export function Mapeamento() {
 
   const cb1Sel = useMemo(() => cb1.find(i => i.id === cb1SelId) ?? null, [cb1, cb1SelId])
 
-  // cb2 filtrado pela MESMA NF selecionada + reordenado pela seleção da NF.
+  // Fornecedor da NF selecionada (linhas de pedido não consumido não carregam
+  // NfChave, só Fornecedor — então é por ele que casamos com a NF).
+  const fornecedorNf = nfSel !== null ? nfInfos[nfSel]?.fornecedor ?? fornecedor : fornecedor
+
+  // cb2 filtrado pelo fornecedor da NF selecionada + reordenado pela seleção.
   const cb2 = useMemo(() => {
-    const base = cb2All.filter(i => nfSel === null || i.nfChave === nfSel)
+    const alvo = fornecedorNf.trim().toLowerCase()
+    const base = cb2All.filter(i => alvo === '' || i.fornecedor.trim().toLowerCase() === alvo)
     return sortCb2(base, cb1Sel)
-  }, [cb2All, nfSel, cb1Sel])
+  }, [cb2All, fornecedorNf, cb1Sel])
 
   const cb2Sel = useMemo(() => cb2.find(i => i.id === cb2SelId) ?? null, [cb2, cb2SelId])
 
@@ -368,9 +372,10 @@ export function Mapeamento() {
   function selecionarCb1(it: ItemNf) {
     setCb1SelId(it.id)
 
-    // CB2 da MESMA NF, já reordenado pela proximidade de preço.
+    // CB2 do mesmo fornecedor da NF, já reordenado pela proximidade de preço.
+    const alvo = fornecedorNf.trim().toLowerCase()
     const candidatos = sortCb2(
-      cb2All.filter(p => nfSel === null || p.nfChave === nfSel),
+      cb2All.filter(p => alvo === '' || p.fornecedor.trim().toLowerCase() === alvo),
       it,
     )
 
