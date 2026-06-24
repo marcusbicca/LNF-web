@@ -31,6 +31,7 @@ interface ItemNf {
 
 interface ItemPedido {
   id: string
+  nfChave: string
   deduKey: string
   pedido: string
   item: string
@@ -129,11 +130,13 @@ function carregarDados(dict: Record<string, PedidoItem[]>): CargaResultado {
         dbl(linha, 'Qtd NF') === 0
       ) {
         const item = str(linha, 'Item')
-        const deduKey = pedido + '|' + item
+        const nfChave = str(linha, 'NfChave')
+        const deduKey = nfChave + '|' + pedido + '|' + item
         let ip = cb2Dict.get(deduKey)
         if (!ip) {
           ip = {
             id: 'ped:' + deduKey,
+            nfChave,
             deduKey,
             pedido,
             item,
@@ -168,6 +171,18 @@ function carregarDados(dict: Record<string, PedidoItem[]>): CargaResultado {
     cb1: [...cb1Dict.values()],
     cb2: [...cb2Dict.values()],
   }
+}
+
+// Reordena CB2: "Sem cadastro" primeiro; depois por proximidade de preço com
+// o item da NF selecionado (espelha o reordenamento do Lv1_SelectionChanged).
+function sortCb2(list: ItemPedido[], ref: ItemNf | null): ItemPedido[] {
+  if (!ref) return list
+  return [...list].sort((a, b) => {
+    const sa = a.semCadastro ? 0 : 1
+    const sb = b.semCadastro ? 0 : 1
+    if (sa !== sb) return sa - sb
+    return Math.abs(a.valorUN - ref.valorUNNF) - Math.abs(b.valorUN - ref.valorUNNF)
+  })
 }
 
 // Runtime "conversao" a partir do campo fator + orientação de/para.
@@ -231,8 +246,10 @@ export function Mapeamento() {
   // Dados de trabalho
   const [fornecedor, setFornecedor] = useState('')
   const [cb1All, setCb1All] = useState<ItemNf[]>([])
-  const [cb2, setCb2] = useState<ItemPedido[]>([])
+  const [cb2All, setCb2All] = useState<ItemPedido[]>([])
   const [vinculos, setVinculos] = useState<Vinculo[]>([])
+  // chave NFe → rótulo legível ("número - fornecedor")
+  const [nfInfos, setNfInfos] = useState<Record<string, { numero: string; fornecedor: string }>>({})
 
   // Seleção
   const [nfSel, setNfSel] = useState<string | null>(null)
@@ -262,7 +279,24 @@ export function Mapeamento() {
   }, [cb1All, nfSel])
 
   const cb1Sel = useMemo(() => cb1.find(i => i.id === cb1SelId) ?? null, [cb1, cb1SelId])
+
+  // cb2 filtrado pela MESMA NF selecionada + reordenado pela seleção da NF.
+  const cb2 = useMemo(() => {
+    const base = cb2All.filter(i => nfSel === null || i.nfChave === nfSel)
+    return sortCb2(base, cb1Sel)
+  }, [cb2All, nfSel, cb1Sel])
+
   const cb2Sel = useMemo(() => cb2.find(i => i.id === cb2SelId) ?? null, [cb2, cb2SelId])
+
+  // Rótulo visível da NF: "[número] - [fornecedor]" (a chave segue no backend).
+  const rotuloNf = useCallback(
+    (chave: string) => {
+      const info = nfInfos[chave]
+      if (info) return `${info.numero}${info.fornecedor ? ' - ' + info.fornecedor : ''}`
+      return chave === '' ? '(sem chave)' : chave
+    },
+    [nfInfos],
+  )
 
   const umbNf = umbBase(cb1Sel?.umbForn ?? '')
   const umbPed = umbBase(cb2Sel?.umbPed ?? '')
@@ -278,9 +312,17 @@ export function Mapeamento() {
         if (!parsed.PedidosDict) throw new Error('Campo PedidosDict ausente — JSON inválido')
         setJsonTexto(format(parsed))
         const { fornecedor: forn, cb1: c1, cb2: c2 } = carregarDados(parsed.PedidosDict)
+
+        // Mapa chave NFe → rótulo legível, a partir das NFs do cadastro.
+        const infos: Record<string, { numero: string; fornecedor: string }> = {}
+        for (const nf of Object.values(parsed.Nfs ?? {})) {
+          if (nf && nf.ChaveNFe) infos[nf.ChaveNFe] = { numero: nf.NumeroNF, fornecedor: nf.Fornecedor }
+        }
+        setNfInfos(infos)
+
         setFornecedor(forn)
         setCb1All(c1)
-        setCb2(c2)
+        setCb2All(c2)
         setVinculos([])
         setCb1SelId(null)
         setCb2SelId(null)
@@ -313,7 +355,8 @@ export function Mapeamento() {
     setCarregado(false)
     setFornecedor('')
     setCb1All([])
-    setCb2([])
+    setCb2All([])
+    setNfInfos({})
     setVinculos([])
     setNfSel(null)
     setCb1SelId(null)
@@ -321,14 +364,20 @@ export function Mapeamento() {
     setStatusCommit(null)
   }
 
-  // ── Seleção CB1: auto-match + reordena CB2 ─────────────────────────────────
+  // ── Seleção CB1: auto-match (a reordenação do CB2 é derivada) ──────────────
   function selecionarCb1(it: ItemNf) {
     setCb1SelId(it.id)
 
-    // 1. Auto-match: alguma ref do CB2 aparece na descrição do item da NF?
+    // CB2 da MESMA NF, já reordenado pela proximidade de preço.
+    const candidatos = sortCb2(
+      cb2All.filter(p => nfSel === null || p.nfChave === nfSel),
+      it,
+    )
+
+    // Auto-match: alguma ref do CB2 aparece na descrição do item da NF?
     const descNf = (it.descricao ?? '').toLowerCase()
     let matchId: string | null = null
-    for (const p of cb2) {
+    for (const p of candidatos) {
       if (
         p.refs.some(
           r =>
@@ -342,17 +391,8 @@ export function Mapeamento() {
       }
     }
 
-    // 2. Reordena CB2: "Sem cadastro" primeiro; depois por proximidade de preço.
-    const reordenado = [...cb2].sort((a, b) => {
-      const sa = a.semCadastro ? 0 : 1
-      const sb = b.semCadastro ? 0 : 1
-      if (sa !== sb) return sa - sb
-      return Math.abs(a.valorUN - it.valorUNNF) - Math.abs(b.valorUN - it.valorUNNF)
-    })
-    setCb2(reordenado)
-
-    // 3. Auto-seleciona o match, ou o primeiro.
-    setCb2SelId(matchId ?? (reordenado.length > 0 ? reordenado[0].id : null))
+    // Auto-seleciona o match, ou o primeiro.
+    setCb2SelId(matchId ?? (candidatos.length > 0 ? candidatos[0].id : null))
   }
 
   // ── Preenche de/para e fator default ao mudar a seleção ────────────────────
@@ -459,7 +499,7 @@ export function Mapeamento() {
 
     setVinculos(prev => [...prev, v])
     setCb1All(prev => prev.filter(i => i.id !== cb1Sel.id))
-    setCb2(prev => prev.filter(i => i.id !== cb2Sel.id))
+    setCb2All(prev => prev.filter(i => i.id !== cb2Sel.id))
     setCb1SelId(null)
     setCb2SelId(null)
     setStatusCommit(null)
@@ -468,7 +508,7 @@ export function Mapeamento() {
   function desvincular(v: Vinculo) {
     setVinculos(prev => prev.filter(x => x.id !== v.id))
     setCb1All(prev => [...prev, v.nf])
-    setCb2(prev => [...prev, v.pedido])
+    setCb2All(prev => [...prev, v.pedido])
   }
 
   // ── Registrar: grava todos os vínculos numa única escrita ──────────────────
@@ -604,7 +644,7 @@ export function Mapeamento() {
           >
             {nfs.map(nf => (
               <option key={nf} value={nf}>
-                {nf === '' ? '(sem chave)' : nf}
+                {rotuloNf(nf)}
               </option>
             ))}
           </select>
@@ -648,25 +688,23 @@ export function Mapeamento() {
       {/* Detalhe + conversão */}
       {cb1Sel && cb2Sel && (
         <div className="bg-zinc-900 border border-zinc-700 rounded-lg p-3 space-y-3">
-          <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
-            <Campo label="Código (pedido)" valor={cb2Sel.codigo} mono />
-            <Campo label="Referência (NF)" valor={cb1Sel.referencia} mono />
-            <div className="col-span-2">
-              <Campo label="Descrição" valor={cb2Sel.descricao} />
-            </div>
-            <Campo label="Qtd pedido" valor={`${num(cb2Sel.qtdPendente)} ${cb2Sel.umbPed}`} />
-            <Campo label="Qtd NF" valor={`${num(cb1Sel.qtdNF)} ${cb1Sel.umbForn}`} />
-            <div className="flex justify-between">
-              <span className="text-zinc-400">Valor un pedido:</span>
-              <span className={`font-bold ${conv?.diverge ? 'text-red-400' : 'text-green-400'}`}>
-                {conv ? num(conv.valorPed) : ''}
-              </span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-zinc-400">Valor un NF (conv.):</span>
-              <span className={`font-bold ${conv?.diverge ? 'text-red-400' : 'text-green-400'}`}>
-                {conv ? num(conv.valorNfConv) : ''}
-              </span>
+          <div className="space-y-2">
+            <CampoRO label="Descrição" valor={cb2Sel.descricao} />
+            <div className="grid grid-cols-2 gap-2">
+              <CampoRO label="Código (pedido)" valor={cb2Sel.codigo} mono />
+              <CampoRO label="Referência (NF)" valor={cb1Sel.referencia} mono />
+              <CampoRO label="Qtd pedido" valor={`${num(cb2Sel.qtdPendente)} ${cb2Sel.umbPed}`} />
+              <CampoRO label="Qtd NF" valor={`${num(cb1Sel.qtdNF)} ${cb1Sel.umbForn}`} />
+              <CampoRO
+                label="Valor un pedido"
+                valor={conv ? num(conv.valorPed) : ''}
+                cor={conv?.diverge ? 'red' : 'green'}
+              />
+              <CampoRO
+                label="Valor un NF (conv.)"
+                valor={conv ? num(conv.valorNfConv) : ''}
+                cor={conv?.diverge ? 'red' : 'green'}
+              />
             </div>
           </div>
 
@@ -855,11 +893,28 @@ function LinhaItem({
   )
 }
 
-function Campo({ label, valor, mono }: { label: string; valor: string; mono?: boolean }) {
+// Campo de detalhe: input não-editável, mas selecionável/copiável.
+function CampoRO({
+  label,
+  valor,
+  mono,
+  cor,
+}: {
+  label: string
+  valor: string
+  mono?: boolean
+  cor?: 'red' | 'green'
+}) {
+  const corTexto = cor === 'red' ? 'text-red-400 font-semibold' : cor === 'green' ? 'text-green-400 font-semibold' : 'text-zinc-100'
   return (
-    <div className="flex justify-between gap-2">
-      <span className="text-zinc-400 shrink-0">{label}:</span>
-      <span className={`text-right ${mono ? 'font-mono' : ''} truncate`}>{valor}</span>
+    <div className="min-w-0">
+      <label className="block text-[11px] uppercase tracking-wide text-zinc-500 mb-1">{label}</label>
+      <input
+        readOnly
+        value={valor}
+        onFocus={e => e.currentTarget.select()}
+        className={`w-full bg-zinc-950 border border-zinc-700 rounded-lg px-2.5 py-2 text-sm ${mono ? 'font-mono' : ''} ${corTexto} focus:outline-none focus:border-green-500`}
+      />
     </div>
   )
 }
