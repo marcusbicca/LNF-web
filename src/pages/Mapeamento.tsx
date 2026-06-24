@@ -93,18 +93,43 @@ interface CargaResultado {
   fornecedor: string
   cb1: ItemNf[]
   cb2: ItemPedido[]
+  // NfChave → conjunto de Pedidos que aquela NF tocou (linhas consumidas).
+  nfPedidos: Record<string, string[]>
+}
+
+function pedidoReal(pedido: string): boolean {
+  return (
+    pedido !== '' &&
+    pedido !== 'Sem pedido' &&
+    pedido !== 'Excedente' &&
+    pedido !== 'Finalizado' &&
+    pedido !== 'Lançado'
+  )
 }
 
 function carregarDados(dict: Record<string, PedidoItem[]>): CargaResultado {
   let fornecedor = ''
   const cb1Dict = new Map<string, ItemNf>()
   const cb2Dict = new Map<string, ItemPedido>()
+  const nfPedidos = new Map<string, Set<string>>()
 
   for (const [refKey, linhas] of Object.entries(dict)) {
     if (!linhas) continue
     for (const linha of linhas) {
       const pedido = str(linha, 'Pedido')
       if (!fornecedor) fornecedor = str(linha, 'Fornecedor')
+
+      // Linha consumida pela NF (tem NfChave + pedido real): registra o vínculo
+      // NF → pedido, usado depois para escopar a lista da direita por NF.
+      const nfChaveLinha = str(linha, 'NfChave')
+      if (nfChaveLinha && pedidoReal(pedido)) {
+        let set = nfPedidos.get(nfChaveLinha)
+        if (!set) {
+          set = new Set<string>()
+          nfPedidos.set(nfChaveLinha, set)
+        }
+        set.add(pedido)
+      }
 
       if (pedido === 'Sem pedido') {
         const refNF = str(linha, 'Referência')
@@ -122,13 +147,7 @@ function carregarDados(dict: Record<string, PedidoItem[]>): CargaResultado {
             valorUNNF: dbl(linha, 'Valor UN NF'),
           })
         }
-      } else if (
-        pedido !== '' &&
-        pedido !== 'Excedente' &&
-        pedido !== 'Finalizado' &&
-        pedido !== 'Lançado' &&
-        dbl(linha, 'Qtd NF') === 0
-      ) {
+      } else if (pedidoReal(pedido) && dbl(linha, 'Qtd NF') === 0) {
         const item = str(linha, 'Item')
         const deduKey = pedido + '|' + item
         let ip = cb2Dict.get(deduKey)
@@ -165,10 +184,14 @@ function carregarDados(dict: Record<string, PedidoItem[]>): CargaResultado {
       : ip.refs.find(r => r.toLowerCase() !== 'sem cadastro') ?? ip.refs[0] ?? ''
   }
 
+  const nfPedidosObj: Record<string, string[]> = {}
+  for (const [chave, set] of nfPedidos) nfPedidosObj[chave] = [...set]
+
   return {
     fornecedor,
     cb1: [...cb1Dict.values()],
     cb2: [...cb2Dict.values()],
+    nfPedidos: nfPedidosObj,
   }
 }
 
@@ -249,6 +272,8 @@ export function Mapeamento() {
   const [vinculos, setVinculos] = useState<Vinculo[]>([])
   // chave NFe → rótulo legível ("número - fornecedor")
   const [nfInfos, setNfInfos] = useState<Record<string, { numero: string; fornecedor: string }>>({})
+  // chave NFe → pedidos que a NF tocou (escopo da lista da direita)
+  const [nfPedidos, setNfPedidos] = useState<Record<string, string[]>>({})
 
   // Seleção
   const [nfSel, setNfSel] = useState<string | null>(null)
@@ -279,16 +304,18 @@ export function Mapeamento() {
 
   const cb1Sel = useMemo(() => cb1.find(i => i.id === cb1SelId) ?? null, [cb1, cb1SelId])
 
-  // Fornecedor da NF selecionada (linhas de pedido não consumido não carregam
-  // NfChave, só Fornecedor — então é por ele que casamos com a NF).
-  const fornecedorNf = nfSel !== null ? nfInfos[nfSel]?.fornecedor ?? fornecedor : fornecedor
+  // Pedidos que a NF selecionada tocou (via linhas consumidas, que têm NfChave).
+  // As linhas de pedido não consumido não têm NfChave, então casamos por Pedido.
+  const pedidosDaNf = useMemo(
+    () => (nfSel !== null ? new Set(nfPedidos[nfSel] ?? []) : null),
+    [nfSel, nfPedidos],
+  )
 
-  // cb2 filtrado pelo fornecedor da NF selecionada + reordenado pela seleção.
+  // cb2 filtrado pelos pedidos da NF selecionada + reordenado pela seleção.
   const cb2 = useMemo(() => {
-    const alvo = fornecedorNf.trim().toLowerCase()
-    const base = cb2All.filter(i => alvo === '' || i.fornecedor.trim().toLowerCase() === alvo)
+    const base = pedidosDaNf ? cb2All.filter(i => pedidosDaNf.has(i.pedido)) : cb2All
     return sortCb2(base, cb1Sel)
-  }, [cb2All, fornecedorNf, cb1Sel])
+  }, [cb2All, pedidosDaNf, cb1Sel])
 
   const cb2Sel = useMemo(() => cb2.find(i => i.id === cb2SelId) ?? null, [cb2, cb2SelId])
 
@@ -315,7 +342,8 @@ export function Mapeamento() {
         const parsed = parseLenient<CadastroJson>(texto)
         if (!parsed.PedidosDict) throw new Error('Campo PedidosDict ausente — JSON inválido')
         setJsonTexto(format(parsed))
-        const { fornecedor: forn, cb1: c1, cb2: c2 } = carregarDados(parsed.PedidosDict)
+        const { fornecedor: forn, cb1: c1, cb2: c2, nfPedidos: np } = carregarDados(parsed.PedidosDict)
+        setNfPedidos(np)
 
         // Mapa chave NFe → rótulo legível, a partir das NFs do cadastro.
         const infos: Record<string, { numero: string; fornecedor: string }> = {}
@@ -361,6 +389,7 @@ export function Mapeamento() {
     setCb1All([])
     setCb2All([])
     setNfInfos({})
+    setNfPedidos({})
     setVinculos([])
     setNfSel(null)
     setCb1SelId(null)
@@ -372,10 +401,9 @@ export function Mapeamento() {
   function selecionarCb1(it: ItemNf) {
     setCb1SelId(it.id)
 
-    // CB2 do mesmo fornecedor da NF, já reordenado pela proximidade de preço.
-    const alvo = fornecedorNf.trim().toLowerCase()
+    // CB2 dos mesmos pedidos da NF, já reordenado pela proximidade de preço.
     const candidatos = sortCb2(
-      cb2All.filter(p => alvo === '' || p.fornecedor.trim().toLowerCase() === alvo),
+      pedidosDaNf ? cb2All.filter(p => pedidosDaNf.has(p.pedido)) : cb2All,
       it,
     )
 
