@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useApp } from '../context/AppContext'
 import type { CadastroJson, FatorEntry, ItensJson, PedidoItem } from '../types'
+import { format, parseLenient } from '../utils/json'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Mapeamento — porta web do MapearMaterialForm do LNF-Coreon.
@@ -273,8 +274,9 @@ export function Mapeamento() {
     (texto: string) => {
       setErroJson(null)
       try {
-        const parsed = JSON.parse(texto) as CadastroJson
+        const parsed = parseLenient<CadastroJson>(texto)
         if (!parsed.PedidosDict) throw new Error('Campo PedidosDict ausente — JSON inválido')
+        setJsonTexto(format(parsed))
         const { fornecedor: forn, cb1: c1, cb2: c2 } = carregarDados(parsed.PedidosDict)
         setFornecedor(forn)
         setCb1All(c1)

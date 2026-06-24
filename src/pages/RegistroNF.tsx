@@ -1,6 +1,7 @@
 import { useCallback, useState } from 'react'
 import { useApp } from '../context/AppContext'
 import type { CadastroJson, FatorEntry, ItemAnalise, ItensJson, PedidoItem } from '../types'
+import { format, parseLenient } from '../utils/json'
 
 // ── Lógica de análise ────────────────────────────────────────────────────────
 
@@ -97,8 +98,9 @@ export function RegistroNF() {
     (texto: string) => {
       setErroJson(null)
       try {
-        const parsed = JSON.parse(texto) as CadastroJson
+        const parsed = parseLenient<CadastroJson>(texto)
         if (!parsed.PedidosDict) throw new Error('Campo PedidosDict ausente — JSON inválido')
+        setJsonTexto(format(parsed))
         setCadastro(parsed)
         if (itens) setItensAnalise(analisarItens(parsed.PedidosDict, itens))
       } catch (e) {
