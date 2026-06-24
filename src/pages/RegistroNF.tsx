@@ -28,7 +28,7 @@ function analisarItens(
       if (refExiste && itemData) {
         status = 'existe'
         const fatores: FatorEntry[] = itemData.referencias[pedido['Referência']]
-        fator = fatores.length > 0 ? fatores[0].fator : null
+        fator = fatores.length > 0 ? fatores[0].fator ?? null : null
       } else if (fornData) {
         // Checa se a referência existe em outro código SAP do mesmo fornecedor
         for (const [cod, item] of Object.entries(fornData.Itens)) {
@@ -37,7 +37,7 @@ function analisarItens(
             const fatores: FatorEntry[] = item.referencias[pedido['Referência']]
             conflito = {
               codigoExistente: cod,
-              fatorExistente: fatores.length > 0 ? fatores[0].fator : null,
+              fatorExistente: fatores.length > 0 ? fatores[0].fator ?? null : null,
             }
             break
           }

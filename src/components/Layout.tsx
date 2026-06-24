@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 
-export type Page = 'registro' | 'config'
+export type Page = 'registro' | 'mapeamento' | 'config'
 
 interface LayoutProps {
   page: Page
@@ -26,6 +26,14 @@ export function Layout({ page, onNavigate, children }: LayoutProps) {
           }`}
         >
           Registro NF
+        </button>
+        <button
+          onClick={() => onNavigate('mapeamento')}
+          className={`flex-1 py-4 text-sm font-medium transition-colors ${
+            page === 'mapeamento' ? 'text-green-400' : 'text-zinc-500 hover:text-zinc-300'
+          }`}
+        >
+          Mapeamento
         </button>
         <button
           onClick={() => onNavigate('config')}

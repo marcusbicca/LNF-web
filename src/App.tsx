@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { AppProvider } from './context/AppContext'
 import { Layout, type Page } from './components/Layout'
 import { RegistroNF } from './pages/RegistroNF'
+import { Mapeamento } from './pages/Mapeamento'
 import { Configuracoes } from './pages/Configuracoes'
 
 export default function App() {
@@ -10,7 +11,9 @@ export default function App() {
   return (
     <AppProvider>
       <Layout page={page} onNavigate={setPage}>
-        {page === 'registro' ? <RegistroNF /> : <Configuracoes />}
+        {page === 'registro' && <RegistroNF />}
+        {page === 'mapeamento' && <Mapeamento />}
+        {page === 'config' && <Configuracoes />}
       </Layout>
     </AppProvider>
   )
