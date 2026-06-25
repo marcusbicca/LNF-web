@@ -531,25 +531,22 @@ export function Mapeamento() {
     setCb2SelId(matchId ?? (candidatos.length > 0 ? candidatos[0].id : null))
   }
 
-  // ── Preenche de/para e fator default ao mudar a seleção ────────────────────
+  // ── Redefine de/para e fator ao trocar de par (espelha AtualizarDetalhe) ───
   useEffect(() => {
     if (!cb1Sel || !cb2Sel) return
+    // SEMPRE redefine a orientação ao trocar de par (não herda de/para de uma
+    // seleção anterior — era a causa da conversão errada). Convenção do
+    // ExecutarService: universal → conversao=Fator; dirA(De=UMB NF) → 1/Fator;
+    // dirB(De=UMB pedido) → Fator. qtdSAP = qtdNF/conversao; valor = raw*conversao.
+    // Padrão de=UMB do pedido (dirB). A ordem não importa — Inverter ajusta o fator.
     if (mostrarDePara) {
-      setDe(prevDe => {
-        // só preenche se ambos vazios (mantém edição do usuário)
-        if (prevDe === '' && para === '') {
-          // padrão: de = UMB do pedido, para = UMB da NF
-          // (fator = quantos [para] cabem em 1 [de]; ex.: 1 CX = 500 UND → fator 500)
-          setPara(umbNf)
-          return umbPed
-        }
-        return prevDe
-      })
+      setDe(umbPed)
+      setPara(umbNf)
     } else {
       setDe('')
       setPara('')
     }
-    setFator(prev => (prev.trim() === '' ? '1' : prev))
+    setFator('1')
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cb1SelId, cb2SelId])
 
