@@ -457,7 +457,7 @@ export function Mapeamento() {
     const valorNfConv = cb1Sel.valorUNNF * conversao
     const valorPed = cb2Sel.valorUN
     const dif = Math.abs((valorNfConv - valorPed) * qtdSAP)
-    return { valorNfConv, valorPed, diverge: dif > 0.5 }
+    return { valorNfConv, valorPed, qtdNfConv: qtdSAP, diverge: dif > 0.5 }
   }, [cb1Sel, cb2Sel, fator, de, umbsIguais, umbNf])
 
   // ── Ações de conversão ─────────────────────────────────────────────────────
@@ -727,7 +727,13 @@ export function Mapeamento() {
               <CampoRO label="Código (pedido)" valor={cb2Sel.codigo} mono />
               <CampoRO label="Referência (NF)" valor={cb1Sel.referencia} mono />
               <CampoRO label="Qtd pedido" valor={`${num(cb2Sel.qtdPendente)} ${cb2Sel.umbPed}`} />
-              <CampoRO label="Qtd NF" valor={`${num(cb1Sel.qtdNF)} ${cb1Sel.umbForn}`} />
+              <CampoRO label="Qtd NF (orig.)" valor={`${num(cb1Sel.qtdNF)} ${cb1Sel.umbForn}`} />
+              <div className="col-span-2">
+                <CampoRO
+                  label="Qtd NF (conv.)"
+                  valor={conv ? `${num(conv.qtdNfConv)} ${cb2Sel.umbPed}*` : ''}
+                />
+              </div>
               <CampoRO
                 label="Valor un pedido"
                 valor={conv ? num(conv.valorPed) : ''}
