@@ -435,8 +435,10 @@ export function Mapeamento() {
       setDe(prevDe => {
         // só preenche se ambos vazios (mantém edição do usuário)
         if (prevDe === '' && para === '') {
-          setPara(umbPed)
-          return umbNf
+          // padrão: de = UMB do pedido, para = UMB da NF
+          // (fator = quantos [para] cabem em 1 [de]; ex.: 1 CX = 500 UND → fator 500)
+          setPara(umbNf)
+          return umbPed
         }
         return prevDe
       })
@@ -492,15 +494,16 @@ export function Mapeamento() {
       return
     }
 
-    // de/para: garante de=UMB da NF, para=UMB do pedido → fator = QtdPed/QtdNF
-    setDe(umbNf)
-    setPara(umbPed)
-    const f = cb1Sel.qtdNF !== 0 ? cb2Sel.qtdPendente / cb1Sel.qtdNF : 1
+    // de/para: orientação base de=UMB do pedido, para=UMB da NF →
+    // fator = QtdNF / QtdPed (1 [pedido] = fator [NF]).
+    setDe(umbPed)
+    setPara(umbNf)
+    const f = cb2Sel.qtdPendente !== 0 ? cb1Sel.qtdNF / cb2Sel.qtdPendente : 1
     if (f > 0 && f < 1) {
-      // mantém fator inteiro: inverte + swap (de/para já está na orientação NF→Ped)
+      // mantém fator inteiro: inverte + swap
       setFator(num(1 / f))
-      setDe(umbPed)
-      setPara(umbNf)
+      setDe(umbNf)
+      setPara(umbPed)
     } else {
       setFator(num(f))
     }
