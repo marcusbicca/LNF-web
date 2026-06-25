@@ -53,6 +53,9 @@ interface Vinculo {
   umbsIguais: boolean
   de: string
   para: string
+  // já existia no itens.json ao carregar (mostrado como "já registrado",
+  // não é reescrito no Registrar a menos que seja refeito).
+  preexistente?: boolean
 }
 
 // ── Helpers numéricos (espelham ParseNum / Num do form C#) ───────────────────
@@ -216,6 +219,29 @@ function conversaoRuntime(fator: number, umbsIguais: boolean, de: string, umbNf:
   return fator
 }
 
+// Reconstrói o estado de conversão (fator/de/para) a partir do que está
+// gravado no itens.json (lista vazia = sem conversão; só fator = universal;
+// com de/para = direcional).
+function reconstruirConv(conv: FatorEntry[] | undefined): {
+  fator: number
+  umbsIguais: boolean
+  de: string
+  para: string
+} {
+  if (!conv || conv.length === 0) return { fator: 1, umbsIguais: true, de: '', para: '' }
+  const c = conv[0]
+  if ((c.de && c.de !== '') || (c.para && c.para !== '')) {
+    return { fator: c.fator ?? 1, umbsIguais: false, de: c.de ?? '', para: c.para ?? '' }
+  }
+  return { fator: c.fator ?? 1, umbsIguais: true, de: '', para: '' }
+}
+
+// Procura a chave (case-insensitive) do fornecedor no itens.json.
+function acharFornecedorKey(itens: ItensJson, fornecedor: string): string | null {
+  const f = fornecedor.trim().toLowerCase()
+  return Object.keys(itens).find(k => k.trim().toLowerCase() === f) ?? null
+}
+
 // Serializa uma conversão no formato do itens.json (espelha ConverterConversao).
 function convToJson(de: string, para: string, fator: number): FatorEntry {
   const o: FatorEntry = {}
@@ -226,15 +252,30 @@ function convToJson(de: string, para: string, fator: number): FatorEntry {
 }
 
 // Aplica os vínculos no itens.json (espelha AplicarItemNoDict/UpsertItens).
+// Ao gravar uma referência, remove-a de qualquer OUTRO código do mesmo
+// fornecedor (refazer limpo: uma referência mapeia para um único código).
 function aplicarVinculos(base: ItensJson, fornecedor: string, vinculos: Vinculo[]): ItensJson {
   const novo = JSON.parse(JSON.stringify(base)) as ItensJson
-  if (!novo[fornecedor]) novo[fornecedor] = { Configuracoes: {}, Itens: {} }
-  const itens = novo[fornecedor].Itens
+  const fkey = acharFornecedorKey(novo, fornecedor) ?? fornecedor
+  if (!novo[fkey]) novo[fkey] = { Configuracoes: {}, Itens: {} }
+  const itens = novo[fkey].Itens
 
   for (const v of vinculos) {
     const cod = (v.pedido.codigo ?? '').trim()
     const ref = (v.nf.referencia ?? '').trim()
     if (!cod || !ref) continue
+
+    // Remove a referência de outros códigos (e descarta itens que ficarem vazios).
+    for (const c of Object.keys(itens)) {
+      if (c === cod) continue
+      const refs = itens[c].referencias
+      if (!refs) continue
+      const k = Object.keys(refs).find(r => r.toLowerCase() === ref.toLowerCase())
+      if (k) {
+        delete refs[k]
+        if (Object.keys(refs).length === 0) delete itens[c]
+      }
+    }
 
     if (!itens[cod]) itens[cod] = { referencias: {}, descricao: v.pedido.descricao }
     else if (v.pedido.descricao) itens[cod].descricao = v.pedido.descricao
@@ -248,6 +289,10 @@ function aplicarVinculos(base: ItensJson, fornecedor: string, vinculos: Vinculo[
           : convToJson(v.de, v.para, v.fator),
       )
     }
+
+    // Evita duplicar a mesma ref com casing diferente.
+    const existK = Object.keys(itens[cod].referencias).find(r => r.toLowerCase() === ref.toLowerCase())
+    if (existK && existK !== ref) delete itens[cod].referencias[existK]
     itens[cod].referencias[ref] = convs
   }
 
@@ -352,13 +397,71 @@ export function Mapeamento() {
         }
         setNfInfos(infos)
 
+        // Pré-vínculos: referências da NF que já estão no itens.json entram
+        // direto na tabela de vínculos (marcadas "já registrado").
+        const preVinculos: Vinculo[] = []
+        const usadosCb1 = new Set<string>()
+        const usadosCb2 = new Set<string>()
+        const fkey = itens ? acharFornecedorKey(itens, forn) : null
+        if (itens && fkey) {
+          const Itens = itens[fkey].Itens
+          for (const it1 of c1) {
+            const ref = (it1.referencia ?? '').trim()
+            if (!ref) continue
+            let achado: { codigo: string; descricao: string; conv: FatorEntry[] } | null = null
+            for (const [cod, item] of Object.entries(Itens)) {
+              const refK = Object.keys(item.referencias ?? {}).find(
+                r => r.toLowerCase() === ref.toLowerCase(),
+              )
+              if (refK) {
+                achado = { codigo: cod, descricao: item.descricao, conv: item.referencias[refK] }
+                break
+              }
+            }
+            if (!achado) continue
+
+            const recon = reconstruirConv(achado.conv)
+            const ped = c2.find(p => p.codigo === achado!.codigo && !usadosCb2.has(p.id))
+            const pedido: ItemPedido = ped ?? {
+              id: 'pre:' + achado.codigo,
+              fornecedor: forn,
+              deduKey: 'pre|' + achado.codigo,
+              pedido: '',
+              item: '',
+              codigo: achado.codigo,
+              descricao: achado.descricao,
+              refs: [],
+              refPrimaria: '',
+              qtdPendente: 0,
+              umbPed: '',
+              valorUN: 0,
+              semCadastro: false,
+            }
+            if (ped) usadosCb2.add(ped.id)
+            usadosCb1.add(it1.id)
+            preVinculos.push({
+              id: 'v:pre:' + it1.id,
+              nf: it1,
+              pedido,
+              fator: recon.fator,
+              umbsIguais: recon.umbsIguais,
+              de: recon.de,
+              para: recon.para,
+              preexistente: true,
+            })
+          }
+        }
+
+        const c1Rest = c1.filter(i => !usadosCb1.has(i.id))
+        const c2Rest = c2.filter(i => !usadosCb2.has(i.id))
+
         setFornecedor(forn)
-        setCb1All(c1)
-        setCb2All(c2)
-        setVinculos([])
+        setCb1All(c1Rest)
+        setCb2All(c2Rest)
+        setVinculos(preVinculos)
         setCb1SelId(null)
         setCb2SelId(null)
-        const nfList = [...new Set(c1.map(i => i.nfChave))].sort((a, b) => a.localeCompare(b))
+        const nfList = [...new Set(c1Rest.map(i => i.nfChave))].sort((a, b) => a.localeCompare(b))
         setNfSel(nfList.length > 0 ? nfList[0] : null)
         setStatusCommit(null)
         setCarregado(true)
@@ -367,7 +470,7 @@ export function Mapeamento() {
         setCarregado(false)
       }
     },
-    [],
+    [itens],
   )
 
   async function colarClipboard() {
@@ -435,8 +538,10 @@ export function Mapeamento() {
       setDe(prevDe => {
         // só preenche se ambos vazios (mantém edição do usuário)
         if (prevDe === '' && para === '') {
-          setPara(umbPed)
-          return umbNf
+          // padrão: de = UMB do pedido, para = UMB da NF
+          // (fator = quantos [para] cabem em 1 [de]; ex.: 1 CX = 500 UND → fator 500)
+          setPara(umbNf)
+          return umbPed
         }
         return prevDe
       })
@@ -492,15 +597,16 @@ export function Mapeamento() {
       return
     }
 
-    // de/para: garante de=UMB da NF, para=UMB do pedido → fator = QtdPed/QtdNF
-    setDe(umbNf)
-    setPara(umbPed)
-    const f = cb1Sel.qtdNF !== 0 ? cb2Sel.qtdPendente / cb1Sel.qtdNF : 1
+    // de/para: orientação base de=UMB do pedido, para=UMB da NF →
+    // fator = QtdNF / QtdPed (1 [pedido] = fator [NF]).
+    setDe(umbPed)
+    setPara(umbNf)
+    const f = cb2Sel.qtdPendente !== 0 ? cb1Sel.qtdNF / cb2Sel.qtdPendente : 1
     if (f > 0 && f < 1) {
-      // mantém fator inteiro: inverte + swap (de/para já está na orientação NF→Ped)
+      // mantém fator inteiro: inverte + swap
       setFator(num(1 / f))
-      setDe(umbPed)
-      setPara(umbNf)
+      setDe(umbNf)
+      setPara(umbPed)
     } else {
       setFator(num(f))
     }
@@ -541,13 +647,17 @@ export function Mapeamento() {
   function desvincular(v: Vinculo) {
     setVinculos(prev => prev.filter(x => x.id !== v.id))
     setCb1All(prev => [...prev, v.nf])
-    setCb2All(prev => [...prev, v.pedido])
+    // Pedido sintético (vínculo pré-existente sem linha de pedido real) não
+    // volta para a lista de candidatos.
+    if (!v.pedido.id.startsWith('pre:')) setCb2All(prev => [...prev, v.pedido])
   }
 
-  // ── Registrar: grava todos os vínculos numa única escrita ──────────────────
+  const novosVinculos = vinculos.filter(v => !v.preexistente)
+
+  // ── Registrar: grava apenas os vínculos novos/refeitos numa única escrita ──
   async function registrar() {
-    if (vinculos.length === 0) {
-      setStatusCommit('⚠️ Nenhum vínculo pendente para registrar.')
+    if (novosVinculos.length === 0) {
+      setStatusCommit('⚠️ Nenhum vínculo novo para registrar.')
       return
     }
     if (!fornecedor.trim()) {
@@ -559,12 +669,13 @@ export function Mapeamento() {
     setCommitando(true)
     setStatusCommit(null)
     try {
-      const novoItens = aplicarVinculos(itens, fornecedor, vinculos)
+      const novoItens = aplicarVinculos(itens, fornecedor, novosVinculos)
       const usuario = config?.usuario ?? 'LNF-Web'
-      const n = vinculos.length
+      const n = novosVinculos.length
       const msg = `[${usuario}] Mapeamento ${fornecedor} — ${n} vínculo(s)`
       await gravarItens(novoItens, msg)
-      setVinculos([])
+      // Os que acabaram de ser gravados passam a contar como "já registrado".
+      setVinculos(prev => prev.map(v => (v.preexistente ? v : { ...v, preexistente: true })))
       setStatusCommit(`✅ ${n} vínculo(s) registrado(s) com sucesso`)
     } catch (e) {
       setStatusCommit(`❌ ${(e as Error).message}`)
@@ -816,10 +927,14 @@ export function Mapeamento() {
         </div>
       )}
 
-      {/* Vínculos pendentes */}
+      {/* Vínculos */}
       <div className="space-y-2">
         <h3 className="text-sm font-semibold text-zinc-300">
-          Vínculos pendentes ({vinculos.length})
+          Vínculos ({vinculos.length}
+          {vinculos.length > novosVinculos.length
+            ? ` · ${vinculos.length - novosVinculos.length} já registrado(s)`
+            : ''}
+          )
         </h3>
         {vinculos.length === 0 ? (
           <p className="text-xs text-zinc-500">
@@ -830,11 +945,20 @@ export function Mapeamento() {
             {vinculos.map(v => (
               <div
                 key={v.id}
-                className="bg-zinc-900 border border-zinc-700 rounded-lg p-2.5 flex items-center justify-between gap-3"
+                className={`border rounded-lg p-2.5 flex items-center justify-between gap-3 ${
+                  v.preexistente ? 'bg-zinc-950 border-zinc-800' : 'bg-zinc-900 border-zinc-700'
+                }`}
               >
                 <div className="min-w-0">
-                  <p className="text-sm truncate">{v.pedido.descricao}</p>
-                  <p className="text-xs text-zinc-400 font-mono">
+                  <p className="text-sm truncate flex items-center gap-2">
+                    {v.preexistente && (
+                      <span className="text-[10px] uppercase tracking-wide bg-zinc-800 text-zinc-400 px-1.5 py-0.5 rounded shrink-0">
+                        já registrado
+                      </span>
+                    )}
+                    <span className="truncate">{v.pedido.descricao}</span>
+                  </p>
+                  <p className="text-xs text-zinc-400 font-mono mt-0.5">
                     {v.pedido.codigo} · <span className="text-white">{v.nf.referencia}</span> · fator{' '}
                     {num(v.fator)} · {v.umbsIguais ? 'universal' : `${v.de} → ${v.para}`}
                   </p>
@@ -870,12 +994,12 @@ export function Mapeamento() {
       {/* Registrar */}
       <button
         onClick={() => void registrar()}
-        disabled={commitando || vinculos.length === 0}
+        disabled={commitando || novosVinculos.length === 0}
         className="w-full bg-green-600 hover:bg-green-500 disabled:opacity-40 disabled:cursor-not-allowed text-white font-semibold py-3.5 rounded-lg transition-colors"
       >
         {commitando
           ? 'Registrando no GitHub...'
-          : `Registrar ${vinculos.length} vínculo(s) no GitHub`}
+          : `Registrar ${novosVinculos.length} vínculo(s) no GitHub`}
       </button>
     </div>
   )
