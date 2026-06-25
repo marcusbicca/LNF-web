@@ -3,6 +3,7 @@ import { AppProvider } from './context/AppContext'
 import { Layout, type Page } from './components/Layout'
 import { RegistroNF } from './pages/RegistroNF'
 import { Mapeamento } from './pages/Mapeamento'
+import { Cadastros } from './pages/Cadastros'
 import { Configuracoes } from './pages/Configuracoes'
 
 export default function App() {
@@ -13,6 +14,7 @@ export default function App() {
       <Layout page={page} onNavigate={setPage}>
         {page === 'registro' && <RegistroNF />}
         {page === 'mapeamento' && <Mapeamento />}
+        {page === 'cadastros' && <Cadastros />}
         {page === 'config' && <Configuracoes />}
       </Layout>
     </AppProvider>
