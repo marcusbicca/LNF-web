@@ -95,7 +95,7 @@ export function Configuracoes() {
           <p>✅ Conectado ao repositório</p>
           <p className="text-zinc-400">
             {Object.keys(itens).length} fornecedores · {' '}
-            {Object.values(itens).reduce((acc, f) => acc + Object.keys(f.Itens).length, 0)} itens SAP
+            {Object.values(itens).reduce((acc, f) => acc + Object.keys(f).length, 0)} itens SAP
           </p>
         </div>
       )}

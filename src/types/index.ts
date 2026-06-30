@@ -1,14 +1,9 @@
 // ── itens.json ──────────────────────────────────────────────────────────────
-// Estrutura: fornecedor → códigoSAP → { referencias, descricao }
-// referencias: referência do fornecedor → array de fator (vazio = sem conversão)
+// Estrutura (formato novo): fornecedor → códigoSAP → item.
+// (A config/termos do fornecedor agora vive no forn.json, não aqui.)
 
 export interface ItensJson {
-  [fornecedor: string]: FornecedorData
-}
-
-export interface FornecedorData {
-  Configuracoes: Record<string, unknown>
-  Itens: Record<string, ItemSAP>
+  [fornecedor: string]: Record<string, ItemSAP>
 }
 
 export interface ItemSAP {
