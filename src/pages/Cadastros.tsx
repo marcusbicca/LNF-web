@@ -66,6 +66,37 @@ function asList(v: unknown): string[] {
   return Array.isArray(v) ? v.map(x => String(x)) : []
 }
 
+// Limpa o objeto do fornecedor antes de gravar: remove campos vazios/false/0
+// e arrays de termos vazios (espelha o forn.json, que omite campos opcionais).
+// Campos desconhecidos com valor "truthy" são preservados.
+function pruneForn(d: Data): Data {
+  const o: Data = {}
+  for (const [k, v] of Object.entries(d)) {
+    if (k === 'termos') {
+      const t: Data = {}
+      for (const [tk, tv] of Object.entries((v as Data) ?? {})) {
+        const arr = asList(tv)
+        if (arr.length) t[tk] = arr
+      }
+      if (Object.keys(t).length) o.termos = t
+      continue
+    }
+    if (Array.isArray(v)) {
+      const arr = v.map(String)
+      if (arr.length) o[k] = arr
+    } else if (typeof v === 'boolean') {
+      if (v) o[k] = true
+    } else if (typeof v === 'number') {
+      if (v) o[k] = v
+    } else if (typeof v === 'string') {
+      if (v.trim()) o[k] = v
+    } else if (v != null) {
+      o[k] = v
+    }
+  }
+  return o
+}
+
 // ── acessos padrão (usuários) ────────────────────────────────────────────────
 const ACESSOS = [
   'cadastroFornecedores',
@@ -98,38 +129,40 @@ const ENTIDADES: EntityConfig[] = [
   {
     id: 'fornecedores',
     label: 'Fornecedores',
-    file: 'forn_list.json',
+    file: 'forn.json',
     keyLabel: 'Nome',
     parse: raw => {
-      const arr = (raw as { fornecedores?: unknown[] })?.fornecedores ?? []
-      return arr.map(f => {
-        const o = f as Data
-        return {
-          key: String(o.nome ?? ''),
-          data: {
-            raizCNPJs: asList(o.raizCNPJs),
-            cnpjs: asList(o.cnpjs),
-            lifnrs: asList(o.lifnrs),
-          },
-        }
-      })
+      const obj = (raw as Record<string, Data>) ?? {}
+      return Object.entries(obj).map(([k, v]) => ({
+        key: k,
+        data: JSON.parse(JSON.stringify(v ?? {})) as Data, // preserva tudo
+      }))
     },
-    build: entries => ({
-      fornecedores: entries.map(({ key, data }) => {
-        const o: Data = { nome: key }
-        const raiz = asList(data.raizCNPJs)
-        o.raizCNPJs = raiz.length ? raiz : null
-        o.cnpjs = asList(data.cnpjs)
-        const lifnrs = asList(data.lifnrs)
-        if (lifnrs.length) o.lifnrs = lifnrs
-        return o
-      }),
-    }),
-    blank: () => ({ raizCNPJs: [], cnpjs: [], lifnrs: [] }),
+    build: entries =>
+      Object.fromEntries(entries.map(({ key, data }) => [key, pruneForn(data)])),
+    blank: () => ({ cnpjs: [] }),
     fields: [
       { path: 'raizCNPJs', label: 'Raiz CNPJs', type: 'list' },
       { path: 'cnpjs', label: 'CNPJs', type: 'list' },
       { path: 'lifnrs', label: 'LIFNRs', type: 'list' },
+      { path: 'ordem', label: 'Ordem', type: 'number' },
+      { path: 'dateFormat', label: 'Date Format', type: 'text' },
+      { path: 'refColuna', label: 'Ref Coluna', type: 'text' },
+      { path: 'refUniversal', label: 'Ref Universal', type: 'text' },
+      { path: 'skipRefs', label: 'Skip Refs', type: 'list' },
+      { path: 'infoXprod', label: 'Info Xprod', type: 'boolean' },
+      { path: 'genericLoteForn', label: 'Generic Lote Forn', type: 'boolean' },
+      { path: 'peinh1000PorDecimais', label: 'Peinh 1000 por Decimais', type: 'boolean' },
+      { path: 'forcarPeinh1000', label: 'Forçar Peinh 1000', type: 'boolean' },
+      { path: 'termos.lote', label: 'Termo · Lote', type: 'list' },
+      { path: 'termos.fimLote', label: 'Termo · Fim Lote', type: 'list' },
+      { path: 'termos.validade', label: 'Termo · Validade', type: 'list' },
+      { path: 'termos.fimValidade', label: 'Termo · Fim Validade', type: 'list' },
+      { path: 'termos.quantidade', label: 'Termo · Quantidade', type: 'list' },
+      { path: 'termos.fimQuantidade', label: 'Termo · Fim Quantidade', type: 'list' },
+      { path: 'termos.referencia', label: 'Termo · Referência', type: 'list' },
+      { path: 'termos.fimReferencia', label: 'Termo · Fim Referência', type: 'list' },
+      { path: 'termos.pedido', label: 'Termo · Pedido', type: 'list' },
     ],
   },
   {

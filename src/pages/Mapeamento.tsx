@@ -257,8 +257,8 @@ function convToJson(de: string, para: string, fator: number): FatorEntry {
 function aplicarVinculos(base: ItensJson, fornecedor: string, vinculos: Vinculo[]): ItensJson {
   const novo = JSON.parse(JSON.stringify(base)) as ItensJson
   const fkey = acharFornecedorKey(novo, fornecedor) ?? fornecedor
-  if (!novo[fkey]) novo[fkey] = { Configuracoes: {}, Itens: {} }
-  const itens = novo[fkey].Itens
+  if (!novo[fkey]) novo[fkey] = {}
+  const itens = novo[fkey]
 
   for (const v of vinculos) {
     const cod = (v.pedido.codigo ?? '').trim()
@@ -404,7 +404,7 @@ export function Mapeamento() {
         const usadosCb2 = new Set<string>()
         const fkey = itens ? acharFornecedorKey(itens, forn) : null
         if (itens && fkey) {
-          const Itens = itens[fkey].Itens
+          const Itens = itens[fkey]
           for (const it1 of c1) {
             const ref = (it1.referencia ?? '').trim()
             if (!ref) continue
