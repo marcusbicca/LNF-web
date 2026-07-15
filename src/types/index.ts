@@ -94,9 +94,13 @@ export interface PedidoItem {
 // ── Configuração do app ──────────────────────────────────────────────────────
 
 export interface Config {
-  githubToken: string
-  owner: string
-  repo: string
+  // Conexão com o Supabase (substitui o antigo GitHub token/owner/repo).
+  // supabaseKey: a secret key (service_role) para poder gravar; a publishable
+  // key só lê. Guardada apenas no localStorage do navegador.
+  supabaseUrl: string
+  supabaseKey: string
+  // itensPath permanece só como seletor lógico do "arquivo" (mapeado para a
+  // tabela pelo basename): itens.json→materiais, forn.json→fornecedores, etc.
   itensPath: string
   usuario: string
 }

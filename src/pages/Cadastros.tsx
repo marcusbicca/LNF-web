@@ -1,14 +1,18 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useApp } from '../context/AppContext'
-import { GitHubService } from '../services/github'
+import { SupabaseService } from '../services/supabase'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Cadastros — CRUD manual de fornecedores, usuários e centros, lendo/gravando
-// os arquivos direto do LNF-files (mesmo repo do itens.json).
+// direto no Supabase (sem Power Automate, sem GitHub).
 //
-//   • forn_list.json  → fornecedores (array)
-//   • usersList.json  → usuários (objeto keyed por login)
-//   • centros.json    → centros   (objeto Centros keyed por id)
+//   • forn.json      → tabela fornecedores (PK nome)
+//   • usersList.json → tabela usuarios     (PK username)
+//   • centros.json   → tabela centros      (PK centro)
+//
+// A leitura reconstrói o shape JSON legado (via SupabaseService.lerArquivo);
+// a escrita é POR LINHA (upsert/delete por entidade) — nada de reescrever o
+// "arquivo" inteiro, o que elimina a perda de dados por truncamento.
 //
 // Cada entidade vira uma lista de { key, data }. Campos texto/número via input,
 // listas via textarea (1 por linha) e booleanos via checkbox. FornOverrides de
@@ -36,7 +40,9 @@ interface EntityConfig {
   file: string
   keyLabel: string
   parse: (raw: unknown) => Entry[]
-  build: (entries: Entry[]) => unknown
+  // Escrita por linha no Supabase. oldKey presente = rename (chave mudou).
+  save: (svc: SupabaseService, key: string, data: Data, oldKey?: string) => Promise<void>
+  remove: (svc: SupabaseService, key: string) => Promise<void>
   blank: () => Data
   fields: FieldSpec[]
 }
@@ -138,8 +144,8 @@ const ENTIDADES: EntityConfig[] = [
         data: JSON.parse(JSON.stringify(v ?? {})) as Data, // preserva tudo
       }))
     },
-    build: entries =>
-      Object.fromEntries(entries.map(({ key, data }) => [key, pruneForn(data)])),
+    save: (svc, key, data, oldKey) => svc.salvarFornecedor(key, pruneForn(data), oldKey),
+    remove: (svc, key) => svc.removerFornecedor(key),
     blank: () => ({ cnpjs: [] }),
     fields: [
       { path: 'raizCNPJs', label: 'Raiz CNPJs', type: 'list' },
@@ -181,17 +187,17 @@ const ENTIDADES: EntityConfig[] = [
         },
       }))
     },
-    build: entries =>
-      Object.fromEntries(
-        entries.map(({ key, data }) => [
-          key,
-          {
-            centros: asList(data.centros),
-            acessos: { ...acessosVazio(), ...((data.acessos as Record<string, boolean>) ?? {}) },
-            nivelAdm: Number(data.nivelAdm) || 0,
-          },
-        ]),
+    save: (svc, key, data, oldKey) =>
+      svc.salvarUsuario(
+        key,
+        {
+          centros: asList(data.centros),
+          acessos: { ...acessosVazio(), ...((data.acessos as Record<string, boolean>) ?? {}) },
+          nivelAdm: Number(data.nivelAdm) || 0,
+        },
+        oldKey,
       ),
+    remove: (svc, key) => svc.removerUsuario(key),
     blank: () => ({ centros: [], acessos: acessosVazio(), nivelAdm: 0 }),
     fields: [
       { path: 'nivelAdm', label: 'Nível Adm', type: 'number' },
@@ -219,24 +225,21 @@ const ENTIDADES: EntityConfig[] = [
         },
       }))
     },
-    build: entries => ({
-      Centros: Object.fromEntries(
-        entries.map(({ key, data }) => {
-          const ceps = asList(data.Ceps)
-          const cnpjs = asList(data.Cnpjs)
-          const o: Data = {
-            GenericLote: String(data.GenericLote ?? 'N'),
-            GenericVal: String(data.GenericVal ?? '31.12.2099'),
-            GenericLoteItems: asList(data.GenericLoteItems),
-            Ceps: ceps.length ? ceps : null,
-            Cnpjs: cnpjs.length ? cnpjs : null,
-            FornOverrides: data.FornOverrides ?? null,
-          }
-          if (data.CentroPardini) o.CentroPardini = true
-          return [key, o]
-        }),
+    save: (svc, key, data, oldKey) =>
+      svc.salvarCentro(
+        key,
+        {
+          GenericLote: String(data.GenericLote ?? 'N'),
+          GenericVal: String(data.GenericVal ?? '31.12.2099'),
+          GenericLoteItems: asList(data.GenericLoteItems),
+          Ceps: asList(data.Ceps),
+          Cnpjs: asList(data.Cnpjs),
+          CentroPardini: !!data.CentroPardini,
+          FornOverrides: data.FornOverrides ?? {},
+        },
+        oldKey,
       ),
-    }),
+    remove: (svc, key) => svc.removerCentro(key),
     blank: () => ({
       GenericLote: 'N',
       GenericVal: '31.12.2099',
@@ -278,9 +281,13 @@ export function Cadastros() {
     [config?.itensPath],
   )
 
+  const svc = useMemo(
+    () => (config ? new SupabaseService(config.supabaseUrl, config.supabaseKey) : null),
+    [config],
+  )
+
   const [path, setPath] = useState('')
   const [entries, setEntries] = useState<Entry[]>([])
-  const [sha, setSha] = useState<string | null>(null)
   const [carregando, setCarregando] = useState(false)
   const [erro, setErro] = useState<string | null>(null)
 
@@ -291,9 +298,9 @@ export function Cadastros() {
   const [salvando, setSalvando] = useState(false)
   const [status, setStatus] = useState<string | null>(null)
 
-  // Carrega o arquivo da entidade selecionada.
+  // Carrega a entidade selecionada (tabela do Supabase, via shape legado).
   const carregar = useCallback(async () => {
-    if (!config?.githubToken) return
+    if (!svc) return
     setCarregando(true)
     setErro(null)
     setStatus(null)
@@ -302,18 +309,15 @@ export function Cadastros() {
     const p = pathFor(ent)
     setPath(p)
     try {
-      const svc = new GitHubService(config.githubToken, config.owner, config.repo)
-      const { data, sha: s } = await svc.lerArquivo(p)
+      const { data } = await svc.lerArquivo(p)
       setEntries(ent.parse(data))
-      setSha(s)
     } catch (e) {
       setErro((e as Error).message)
       setEntries([])
-      setSha(null)
     } finally {
       setCarregando(false)
     }
-  }, [config, ent, pathFor])
+  }, [svc, ent, pathFor])
 
   useEffect(() => {
     void carregar()
@@ -341,63 +345,57 @@ export function Cadastros() {
     setForm(f => ({ ...f, data: cloneSetPath(f.data, pathStr, val) }))
   }
 
-  async function gravar(novosEntries: Entry[], msg: string) {
-    if (!config) return
-    if (!sha) {
-      setStatus('❌ SHA do arquivo ausente — recarregue.')
-      return
+  // Recalcula a lista local após um save (com possível rename), espelhando o
+  // que foi gravado por linha no Supabase.
+  function aplicarLocal(key: string): Entry[] {
+    if (selKey && entries.some(e => e.key === selKey)) {
+      let next = entries.map(e => (e.key === selKey ? { key, data: form.data } : e))
+      if (key !== selKey) next = next.filter((e, i) => !(e.key === key && entries[i]?.key !== selKey))
+      return next
     }
-    setSalvando(true)
-    setStatus(null)
-    try {
-      const svc = new GitHubService(config.githubToken, config.owner, config.repo)
-      const novoSha = await svc.gravarArquivo(path, ent.build(novosEntries), sha, msg)
-      setSha(novoSha)
-      setEntries(novosEntries)
-    } finally {
-      setSalvando(false)
+    if (entries.some(e => e.key === key)) {
+      return entries.map(e => (e.key === key ? { key, data: form.data } : e))
     }
+    return [...entries, { key, data: form.data }]
   }
 
   async function salvar() {
+    if (!svc) return
     const key = form.key.trim()
     if (!key) {
       setStatus(`⚠️ Informe o ${ent.keyLabel}.`)
       return
     }
-    const usuario = config?.usuario ?? 'LNF-Web'
-
-    let next: Entry[]
-    if (selKey && entries.some(e => e.key === selKey)) {
-      // Edição (com possível rename): substitui na mesma posição.
-      next = entries.map(e => (e.key === selKey ? { key, data: form.data } : e))
-      if (key !== selKey) next = next.filter((e, i) => !(e.key === key && entries[i]?.key !== selKey))
-    } else if (entries.some(e => e.key === key)) {
-      next = entries.map(e => (e.key === key ? { key, data: form.data } : e))
-    } else {
-      next = [...entries, { key, data: form.data }]
-    }
-
+    setSalvando(true)
+    setStatus(null)
     try {
-      await gravar(next, `[${usuario}] Cadastro ${ent.label}: ${key}`)
+      const oldKey = selKey && selKey !== key ? selKey : undefined
+      await ent.save(svc, key, form.data, oldKey)
+      setEntries(aplicarLocal(key))
       setSelKey(key)
       setStatus(`✅ "${key}" salvo com sucesso`)
     } catch (e) {
       setStatus(`❌ ${(e as Error).message}`)
+    } finally {
+      setSalvando(false)
     }
   }
 
   async function remover() {
-    if (!selKey) return
+    if (!svc || !selKey) return
     if (!window.confirm(`Remover "${selKey}" de ${ent.label}?`)) return
-    const usuario = config?.usuario ?? 'LNF-Web'
-    const next = entries.filter(e => e.key !== selKey)
+    setSalvando(true)
+    setStatus(null)
     try {
-      await gravar(next, `[${usuario}] Remover ${ent.label}: ${selKey}`)
+      await ent.remove(svc, selKey)
+      setEntries(entries.filter(e => e.key !== selKey))
+      const removido = selKey
       novo()
-      setStatus(`✅ "${selKey}" removido`)
+      setStatus(`✅ "${removido}" removido`)
     } catch (e) {
       setStatus(`❌ ${(e as Error).message}`)
+    } finally {
+      setSalvando(false)
     }
   }
 
@@ -407,8 +405,8 @@ export function Cadastros() {
       <div className="p-6 text-center text-zinc-400 mt-12 space-y-2">
         <p className="text-4xl">🔑</p>
         <p>
-          Configure o GitHub Token em <span className="text-white font-medium">Configurações</span>{' '}
-          para começar.
+          Configure a conexão do Supabase em{' '}
+          <span className="text-white font-medium">Configurações</span> para começar.
         </p>
       </div>
     )

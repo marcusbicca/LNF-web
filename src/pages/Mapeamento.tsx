@@ -687,8 +687,8 @@ export function Mapeamento() {
       <div className="p-6 text-center text-zinc-400 mt-12 space-y-2">
         <p className="text-4xl">🔑</p>
         <p>
-          Configure o GitHub Token em <span className="text-white font-medium">Configurações</span>{' '}
-          para começar.
+          Configure a conexão do Supabase em{' '}
+          <span className="text-white font-medium">Configurações</span> para começar.
         </p>
       </div>
     )
@@ -995,8 +995,8 @@ export function Mapeamento() {
         className="w-full bg-green-600 hover:bg-green-500 disabled:opacity-40 disabled:cursor-not-allowed text-white font-semibold py-3.5 rounded-lg transition-colors"
       >
         {commitando
-          ? 'Registrando no GitHub...'
-          : `Registrar ${novosVinculos.length} vínculo(s) no GitHub`}
+          ? 'Registrando no Supabase...'
+          : `Registrar ${novosVinculos.length} vínculo(s) no Supabase`}
       </button>
     </div>
   )

@@ -7,7 +7,7 @@ import {
   type ReactNode,
 } from 'react'
 import type { Config, ItensJson } from '../types'
-import { GitHubService } from '../services/github'
+import { SupabaseService } from '../services/supabase'
 
 const CONFIG_KEY = 'lnf_config'
 
@@ -47,7 +47,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setCarregandoItens(true)
     setErroItens(null)
     try {
-      const svc = new GitHubService(config.githubToken, config.owner, config.repo)
+      const svc = new SupabaseService(config.supabaseUrl, config.supabaseKey)
       const { data, sha } = await svc.lerArquivo(config.itensPath)
       setItens(data as ItensJson)
       setItensSha(sha)
@@ -59,16 +59,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [config])
 
   async function gravarItens(novoItens: ItensJson, mensagem: string) {
-    if (!config || !itensSha) throw new Error('Configuração ausente ou SHA inválido')
-    const svc = new GitHubService(config.githubToken, config.owner, config.repo)
-    const novoSha = await svc.gravarArquivo(config.itensPath, novoItens, itensSha, mensagem)
+    if (!config) throw new Error('Configuração ausente')
+    const svc = new SupabaseService(config.supabaseUrl, config.supabaseKey)
+    const novoSha = await svc.gravarArquivo(config.itensPath, novoItens, itensSha ?? '', mensagem)
     setItens(novoItens)
     setItensSha(novoSha)
   }
 
   useEffect(() => {
-    if (config?.githubToken) void carregarItens()
-  }, [config?.githubToken, carregarItens])
+    if (config?.supabaseUrl && config?.supabaseKey) void carregarItens()
+  }, [config?.supabaseUrl, config?.supabaseKey, carregarItens])
 
   return (
     <AppContext.Provider

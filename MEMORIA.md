@@ -4,6 +4,47 @@
 
 ---
 
+## 0. Migração para Supabase (2026-07) — LEIA PRIMEIRO
+
+O app **deixou de usar o GitHub/LNF-files** como camada de dados. Agora lê e grava
+**direto no Supabase (PostgREST), sem Power Automate**. As telas continuam iguais; só
+mudou a fonte dos dados.
+
+**Configurações**: em vez de GitHub token/owner/repo, informe **Supabase URL** + **Supabase
+Key**. Para gravar é preciso a **secret key** (service_role); a publishable/anon só lê (RLS).
+A key fica só no localStorage do navegador (mesmo tradeoff do antigo token).
+
+**Mapa arquivo → tabela** (o "path" virou seletor lógico pelo basename):
+
+| JSON legado          | Tabela            | PK                    |
+|----------------------|-------------------|-----------------------|
+| `itens.json`         | `materiais`       | (fornecedor, codigo)  |
+| `forn.json`          | `fornecedores`    | nome                  |
+| `usersList.json`     | `usuarios`        | username              |
+| `centros.json`       | `centros`         | centro                |
+| `termos_globais.json`| `termos_globais`  | id (surrogate)        |
+
+**Arquitetura da camada de dados** (`src/services/supabase.ts`):
+- `lerArquivo(path)` — SELECT paginado (contorna o teto de 1000 linhas do PostgREST) e
+  **reconstrói o shape JSON legado** que as telas já consomem. O mapa coluna↔chave espelha
+  o lado C# (`SupabaseSync`/`SupabaseStore` do LNF-Coreon).
+- `gravarArquivo('itens.json', …)` — escrita de materiais por **diff por linha** (upsert só
+  do que mudou + delete do que sumiu). Elimina o truncamento de arquivo inteiro que causava
+  perda de dados.
+- Cadastros usa métodos **por entidade**: `salvarFornecedor/removerFornecedor` (rename move
+  os materiais via FK cascade), `salvarUsuario/removerUsuario`, `salvarCentro/removerCentro`.
+
+**Importação única LNF-files → Supabase** (`src/services/importLnfFiles.ts`): botão em
+Configurações puxa os JSONs atuais do GitHub e faz **upsert** no banco (fornecedores antes de
+materiais por causa da FK; termos = replace-all). Aditivo/idempotente. Requer um GitHub token
+(leitura do LNF-files, não é salvo) + a secret key do Supabase.
+
+**Segurança**: se colar a secret key do Supabase publicamente em algum momento, **rotacione-a**
+no dashboard (o novo modelo de key é rotacionável). O `github.ts` foi mantido só para a
+importação única.
+
+---
+
 ## 1. Contexto e Decisões
 
 ### Por que abandonar o LNF-android
