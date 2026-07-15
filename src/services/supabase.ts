@@ -506,6 +506,38 @@ export class SupabaseService {
   async deleteBruto(table: string, filter: string): Promise<void> {
     await this.del(table, filter)
   }
+
+  // ── introspecção / editor universal ───────────────────────────────────────
+
+  // Documento OpenAPI da raiz do PostgREST (descreve tabelas/colunas/PKs).
+  async openApi(): Promise<unknown> {
+    const res = await fetch(this.base, { headers: this.headers() })
+    if (!res.ok) await this.erro(res)
+    return res.json()
+  }
+
+  // Uma página de linhas de qualquer tabela (paginação/ordem/filtros do caller).
+  async lerLinhas(
+    table: string,
+    opts: { order?: string; limit?: number; offset?: number; filtros?: string } = {},
+  ): Promise<Row[]> {
+    const parts = ['select=*']
+    if (opts.order) parts.push(`order=${opts.order}`)
+    if (opts.limit != null) parts.push(`limit=${opts.limit}`)
+    if (opts.offset != null) parts.push(`offset=${opts.offset}`)
+    if (opts.filtros) parts.push(opts.filtros)
+    const res = await fetch(`${this.base}${table}?${parts.join('&')}`, { headers: this.headers() })
+    if (!res.ok) await this.erro(res)
+    return (await res.json()) as Row[]
+  }
+
+  async salvarLinha(table: string, payload: Row, onConflict: string | null): Promise<void> {
+    await this.upsert(table, [payload], onConflict)
+  }
+
+  async deletarLinha(table: string, filtro: string): Promise<void> {
+    await this.del(table, filtro)
+  }
 }
 
 // Compara as colunas de negócio de materiais (ignora updated_at etc.).

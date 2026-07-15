@@ -43,6 +43,24 @@ materiais por causa da FK; termos = replace-all). Aditivo/idempotente. Requer um
 no dashboard (o novo modelo de key é rotacionável). O `github.ts` foi mantido só para a
 importação única.
 
+### Editor universal de tabelas (aba "Tabelas")
+
+Página que **descobre o schema sozinha** via OpenAPI do PostgREST (`GET /rest/v1/`) e monta o
+formulário automaticamente — não precisa mexer no código quando surge tabela/coluna nova.
+
+- `src/services/schema.ts` — `parseTabelas(openapi)` → metadados (tipo de cada coluna, PK,
+  required, autoPk). `paraEdicao`/`paraGravar` convertem valor do banco ↔ representação do
+  formulário por tipo.
+- Mapa tipo → widget: `boolean`→checkbox · `number`→numérico · `text`→caixa · `text[]`/array
+  →textarea (1 item por linha) · `jsonb`→editor de JSON validado · `timestamp`/PK auto (id
+  identity)→só leitura (o banco gerencia).
+- `src/pages/Tabelas.tsx` — seletor de tabela, lista paginada com busca (server-side por PK
+  texto via ilike + filtro client-side), form dinâmico, gravar (upsert por PK; INSERT puro
+  quando a PK é `id` identity) e remover. Tabela sem PK detectada = só leitura.
+
+Os editores específicos (Cadastros) foram **mantidos** — a ideia é aposentá-los depois que o
+universal provar que roda bem (principalmente a edição de jsonb).
+
 ---
 
 ## 1. Contexto e Decisões

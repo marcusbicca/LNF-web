@@ -3,6 +3,7 @@ import { AppProvider } from './context/AppContext'
 import { Layout, type Page } from './components/Layout'
 import { Mapeamento } from './pages/Mapeamento'
 import { Cadastros } from './pages/Cadastros'
+import { Tabelas } from './pages/Tabelas'
 import { Configuracoes } from './pages/Configuracoes'
 
 export default function App() {
@@ -13,6 +14,7 @@ export default function App() {
       <Layout page={page} onNavigate={setPage}>
         {page === 'mapeamento' && <Mapeamento />}
         {page === 'cadastros' && <Cadastros />}
+        {page === 'tabelas' && <Tabelas />}
         {page === 'config' && <Configuracoes />}
       </Layout>
     </AppProvider>
