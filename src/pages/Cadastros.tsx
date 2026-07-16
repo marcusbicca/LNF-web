@@ -302,6 +302,32 @@ export function Cadastros() {
   const [salvando, setSalvando] = useState(false)
   const [status, setStatus] = useState<string | null>(null)
 
+  // Solicitações de cadastro de fornecedor (tabela solicitacoes_forn, pendentes).
+  const [solic, setSolic] = useState<Array<Record<string, unknown>>>([])
+  const [solicCnpj, setSolicCnpj] = useState<string | null>(null) // solicitação sendo atendida
+
+  const carregarSolic = useCallback(async () => {
+    if (!svc || entId !== 'fornecedores') {
+      setSolic([])
+      return
+    }
+    try {
+      setSolic(
+        await svc.lerLinhas('solicitacoes_forn', {
+          filtros: 'status=eq.pendente',
+          order: 'created_at.desc',
+          limit: 200,
+        }),
+      )
+    } catch {
+      setSolic([]) // tabela pode não existir ainda — silencioso
+    }
+  }, [svc, entId])
+
+  useEffect(() => {
+    void carregarSolic()
+  }, [carregarSolic])
+
   // Carrega a entidade selecionada (tabela do Supabase, via shape legado).
   const carregar = useCallback(async () => {
     if (!svc) return
@@ -337,12 +363,36 @@ export function Cadastros() {
     setSelKey(e.key)
     setForm({ key: e.key, data: JSON.parse(JSON.stringify(e.data)) as Data })
     setStatus(null)
+    setSolicCnpj(null)
   }
 
   function novo() {
     setSelKey(null)
     setForm({ key: '', data: ent.blank() })
     setStatus(null)
+    setSolicCnpj(null)
+  }
+
+  // "Cadastrar" a partir de uma solicitação: pré-preenche um fornecedor novo
+  // (nome como chave, CNPJ na lista) e marca a solicitação p/ concluir no save.
+  function cadastrarDeSolic(sol: Record<string, unknown>) {
+    const cnpj = String(sol.cnpj ?? '')
+    setSelKey(null)
+    setForm({ key: String(sol.nome ?? '').trim(), data: { cnpjs: cnpj ? [cnpj] : [] } })
+    setSolicCnpj(cnpj || null)
+    setStatus('ℹ️ Revise e salve para concluir o cadastro.')
+  }
+
+  async function ignorarSolic(sol: Record<string, unknown>) {
+    if (!svc) return
+    const cnpj = String(sol.cnpj ?? '')
+    if (!cnpj) return
+    try {
+      await svc.salvarLinha('solicitacoes_forn', { cnpj, status: 'ignorado' }, 'cnpj')
+      await carregarSolic()
+    } catch (e) {
+      setStatus(`❌ ${(e as Error).message}`)
+    }
   }
 
   function setCampo(pathStr: string, val: unknown) {
@@ -378,6 +428,17 @@ export function Cadastros() {
       setEntries(aplicarLocal(key))
       setSelKey(key)
       setStatus(`✅ "${key}" salvo com sucesso`)
+
+      // Se veio de uma solicitação de cadastro, marca como concluída.
+      if (entId === 'fornecedores' && solicCnpj) {
+        try {
+          await svc.salvarLinha('solicitacoes_forn', { cnpj: solicCnpj, status: 'cadastrado' }, 'cnpj')
+          setSolicCnpj(null)
+          await carregarSolic()
+        } catch {
+          /* não bloqueia o sucesso do cadastro */
+        }
+      }
     } catch (e) {
       setStatus(`❌ ${(e as Error).message}`)
     } finally {
@@ -451,6 +512,40 @@ export function Cadastros() {
       {erro && (
         <div className="bg-red-950 border border-red-800 rounded-lg p-3 text-red-300 text-sm">
           ❌ {erro}
+        </div>
+      )}
+
+      {/* Solicitações de cadastro de fornecedor (pendentes) */}
+      {entId === 'fornecedores' && solic.length > 0 && (
+        <div className="border border-amber-800/60 bg-amber-950/30 rounded-lg p-3 space-y-2">
+          <p className="text-xs font-medium text-amber-300">
+            {solic.length} solicitação(ões) de cadastro de fornecedor
+          </p>
+          <div className="divide-y divide-amber-900/40 max-h-56 overflow-y-auto">
+            {solic.map(s => (
+              <div key={String(s.cnpj)} className="flex items-center gap-2 py-2 text-sm">
+                <div className="min-w-0 flex-1">
+                  <p className="text-zinc-100 truncate">{String(s.nome || '(sem nome)')}</p>
+                  <p className="text-xs text-zinc-500">
+                    CNPJ {String(s.cnpj)}
+                    {s.usuario ? ` · ${String(s.usuario)}` : ''}
+                  </p>
+                </div>
+                <button
+                  onClick={() => cadastrarDeSolic(s)}
+                  className="px-2.5 py-1 bg-green-700 hover:bg-green-600 text-white rounded text-xs font-medium transition-colors"
+                >
+                  Cadastrar
+                </button>
+                <button
+                  onClick={() => void ignorarSolic(s)}
+                  className="px-2.5 py-1 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-300 rounded text-xs transition-colors"
+                >
+                  Ignorar
+                </button>
+              </div>
+            ))}
+          </div>
         </div>
       )}
 
