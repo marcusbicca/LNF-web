@@ -47,7 +47,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setCarregandoItens(true)
     setErroItens(null)
     try {
-      const svc = new SupabaseService(config.supabaseUrl, config.supabaseKey)
+      const svc = new SupabaseService(config.paUrl, config.usuario)
       const { data, sha } = await svc.lerArquivo(config.itensPath)
       setItens(data as ItensJson)
       setItensSha(sha)
@@ -60,15 +60,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   async function gravarItens(novoItens: ItensJson, mensagem: string) {
     if (!config) throw new Error('Configuração ausente')
-    const svc = new SupabaseService(config.supabaseUrl, config.supabaseKey)
+    const svc = new SupabaseService(config.paUrl, config.usuario)
     const novoSha = await svc.gravarArquivo(config.itensPath, novoItens, itensSha ?? '', mensagem)
     setItens(novoItens)
     setItensSha(novoSha)
   }
 
   useEffect(() => {
-    if (config?.supabaseUrl && config?.supabaseKey) void carregarItens()
-  }, [config?.supabaseUrl, config?.supabaseKey, carregarItens])
+    if (config?.paUrl) void carregarItens()
+  }, [config?.paUrl, carregarItens])
 
   return (
     <AppContext.Provider

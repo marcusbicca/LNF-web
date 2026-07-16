@@ -13,8 +13,7 @@ export function Configuracoes() {
   const { config, salvarConfig, carregarItens, carregandoItens, erroItens, itens } = useApp()
 
   const [form, setForm] = useState<Config>({
-    supabaseUrl: config?.supabaseUrl ?? 'https://bfcwxdivewyjspfvupfr.supabase.co',
-    supabaseKey: config?.supabaseKey ?? '',
+    paUrl: config?.paUrl ?? '',
     itensPath: config?.itensPath ?? 'itens.json',
     usuario: config?.usuario ?? '',
   })
@@ -28,30 +27,21 @@ export function Configuracoes() {
       <h2 className="text-xl font-bold">Configurações</h2>
 
       <div className="space-y-4">
-        <Field label="Supabase URL">
-          <input
-            value={form.supabaseUrl}
-            onChange={e => set('supabaseUrl', e.target.value)}
-            placeholder="https://xxxx.supabase.co"
-            className="input"
-          />
-        </Field>
-
-        <Field label="Supabase Key (secret key p/ gravar)">
+        <Field label="URL do Power Automate (leitura e escrita)">
           <input
             type="password"
-            value={form.supabaseKey}
-            onChange={e => set('supabaseKey', e.target.value)}
-            placeholder="sb_secret_..."
+            value={form.paUrl}
+            onChange={e => set('paUrl', e.target.value)}
+            placeholder="https://...powerautomate.../invoke?..."
             className="input"
           />
         </Field>
 
-        <Field label="Usuário (identifica quem cadastrou)">
+        <Field label="Usuário (autoriza quem pode gravar)">
           <input
             value={form.usuario}
             onChange={e => set('usuario', e.target.value)}
-            placeholder="Seu nome"
+            placeholder="seu.login"
             className="input"
           />
         </Field>
@@ -81,7 +71,7 @@ export function Configuracoes() {
 
       {itens && !erroItens && (
         <div className="bg-green-950 border border-green-800 rounded-lg p-3 text-green-300 text-sm space-y-1">
-          <p>✅ Conectado ao Supabase</p>
+          <p>✅ Conectado via Power Automate</p>
           <p className="text-zinc-400">
             {Object.keys(itens).length} fornecedores ·{' '}
             {Object.values(itens).reduce((acc, f) => acc + Object.keys(f).length, 0)} itens SAP
@@ -90,25 +80,19 @@ export function Configuracoes() {
       )}
 
       <div className="bg-zinc-900 border border-zinc-700 rounded-lg p-3 text-xs text-zinc-500 space-y-1">
-        <p className="font-medium text-zinc-400">Sobre a Supabase Key:</p>
-        <p>• Para ler e gravar cadastros, use a <span className="text-zinc-300">secret key</span> (service_role).</p>
-        <p>• A publishable/anon key só lê (RLS bloqueia escrita).</p>
-        <p>• A key fica só no localStorage deste navegador.</p>
+        <p className="font-medium text-zinc-400">Como funciona:</p>
+        <p>• O secret do Supabase fica no fluxo do Power Automate — nunca no browser.</p>
+        <p>• A leitura e a escrita passam pelo mesmo fluxo (op SELECT/UPSERT/DELETE).</p>
+        <p>• O campo "Usuário" vai no pedido de escrita; o fluxo decide quem pode gravar.</p>
       </div>
 
-      <ImportarLnfFiles supabaseUrl={form.supabaseUrl} supabaseKey={form.supabaseKey} />
+      <ImportarLnfFiles paUrl={form.paUrl} usuario={form.usuario} />
     </div>
   )
 }
 
 // ── Importação única LNF-files → Supabase ────────────────────────────────────
-function ImportarLnfFiles({
-  supabaseUrl,
-  supabaseKey,
-}: {
-  supabaseUrl: string
-  supabaseKey: string
-}) {
+function ImportarLnfFiles({ paUrl, usuario }: { paUrl: string; usuario: string }) {
   const [aberto, setAberto] = useState(false)
   const [ghToken, setGhToken] = useState('')
   const [owner, setOwner] = useState(IMPORT_DEFAULTS.owner)
@@ -119,8 +103,8 @@ function ImportarLnfFiles({
 
   async function importar() {
     setErro(null)
-    if (!supabaseUrl || !supabaseKey) {
-      setErro('Preencha a Supabase URL e a secret key acima antes de importar.')
+    if (!paUrl) {
+      setErro('Preencha a URL do Power Automate acima antes de importar.')
       return
     }
     if (!ghToken.trim()) {
@@ -139,7 +123,7 @@ function ImportarLnfFiles({
     setRodando(true)
     setResultados([])
     try {
-      const sb = new SupabaseService(supabaseUrl, supabaseKey)
+      const sb = new SupabaseService(paUrl, usuario)
       const gh = new GitHubService(ghToken.trim(), owner.trim(), repo.trim())
       await importarLnfFiles(
         sb,
@@ -168,8 +152,8 @@ function ImportarLnfFiles({
         <div className="p-3 border-t border-zinc-800 space-y-3">
           <p className="text-xs text-zinc-500">
             Puxa forn.json, itens.json, centros.json, usersList.json e termos_globais.json do
-            GitHub e faz upsert no Supabase. Use quando o LNF-files tiver dados mais novos que o
-            banco. Fornecedores são importados antes dos materiais (FK).
+            GitHub e faz upsert no Supabase (via Power Automate). Use quando o LNF-files tiver
+            dados mais novos que o banco. Fornecedores são importados antes dos materiais (FK).
           </p>
 
           <Field label="GitHub Token (leitura do LNF-files)">

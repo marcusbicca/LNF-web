@@ -1,6 +1,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // SupabaseService — camada de dados do LNF-Web sobre o Postgres do Supabase
-// (PostgREST), acessado DIRETO do navegador (sem Power Automate).
+// (PostgREST), acessado via um fluxo do Power Automate que guarda o secret no
+// servidor (o secret NUNCA vai para o browser — o Supabase bloqueia isso).
 //
 // Substitui o antigo GitHubService (que lia/gravava os JSONs do LNF-files). Em
 // vez de arquivos, os dados vivem em tabelas:
@@ -19,9 +20,13 @@
 // Mapeamento coluna↔chave espelha o lado C# (SupabaseSync/SupabaseStore do
 // LNF-Coreon), para que os dois produzam/consumam exatamente o mesmo formato.
 //
-// Chave: o campo "Supabase Key" da tela de Configurações. Para GRAVAR é preciso
-// a secret key (service_role) — a publishable/anon só lê (RLS). Fica só no
-// localStorage do navegador, mesmo tradeoff do antigo GitHub token.
+// Config: o campo "URL do Power Automate" (o mesmo fluxo que o LNF-Coreon usa).
+// Fica só no localStorage do navegador — não é chave secreta, é o endpoint do
+// fluxo, que por sua vez valida o usuário e executa a chamada REST no Supabase.
+//
+// Contrato do fluxo (idêntico ao lado C#): recebe um JSON
+//   { op:"SELECT"|"UPSERT"|"DELETE"|"OPENAPI", tabela, query|linhas|conflito|filtro, usuario }
+// e devolve o corpo da API do Supabase (para SELECT, o array de linhas).
 // ─────────────────────────────────────────────────────────────────────────────
 
 export interface FileResult {
@@ -212,74 +217,98 @@ function pkMateriais(r: Row): string {
   return String(r.fornecedor) + '|||' + String(r.codigo)
 }
 
-export class SupabaseService {
-  private base: string
-  constructor(
-    url: string,
-    private key: string,
-  ) {
-    this.base = url.replace(/\/+$/, '') + '/rest/v1/'
-  }
-
-  private headers(extra?: Record<string, string>): HeadersInit {
-    return {
-      apikey: this.key,
-      Authorization: `Bearer ${this.key}`,
-      'Content-Type': 'application/json',
-      ...extra,
-    }
-  }
-
-  private async erro(res: Response): Promise<never> {
-    let detalhe = res.statusText
+// A resposta do fluxo do PA é o corpo cru da API. Alguns fluxos devolvem o
+// JSON como string, ou embrulhado ({body|value|data}). Estes helpers toleram
+// as variações comuns.
+function parseJson(txt: string): unknown {
+  const t = (txt ?? '').trim()
+  if (!t) return null
+  let p: unknown = JSON.parse(t)
+  if (typeof p === 'string') {
     try {
-      const body = (await res.json()) as { message?: string; hint?: string; code?: string }
-      detalhe = body.message
-        ? `${body.code ? body.code + ': ' : ''}${body.message}${body.hint ? ' — ' + body.hint : ''}`
-        : detalhe
+      p = JSON.parse(p)
     } catch {
-      /* corpo não-JSON */
+      /* era mesmo uma string */
     }
-    throw new Error(`Supabase ${res.status}: ${detalhe}`)
+  }
+  return p
+}
+
+function parseRows(txt: string): Row[] {
+  const p = parseJson(txt)
+  if (Array.isArray(p)) return p as Row[]
+  if (p && typeof p === 'object') {
+    const o = p as Record<string, unknown>
+    for (const k of ['body', 'value', 'data']) if (Array.isArray(o[k])) return o[k] as Row[]
+    // objeto de erro do PostgREST/PA
+    if (o.message || o.error)
+      throw new Error(String(o.message ?? o.error))
+  }
+  throw new Error('Resposta do Power Automate não é uma lista de linhas.')
+}
+
+export class SupabaseService {
+  private paUrl: string
+  private usuario: string
+  private configurado: boolean
+  constructor(paUrl: string, usuario?: string) {
+    this.paUrl = (paUrl ?? '').trim()
+    this.usuario = (usuario ?? '').trim()
+    this.configurado = !!this.paUrl
   }
 
-  // GET paginado (contorna o teto de linhas do PostgREST).
-  private async getAll(table: string, params: string): Promise<Row[]> {
-    const pageSize = 1000
-    const order = ORDER_BY[table] ? `&order=${ORDER_BY[table]}` : ''
-    const all: Row[] = []
-    for (let offset = 0; ; offset += pageSize) {
-      const q = `${params}${order}&limit=${pageSize}&offset=${offset}`
-      const res = await fetch(`${this.base}${table}?${q}`, { headers: this.headers() })
-      if (!res.ok) await this.erro(res)
-      const rows = (await res.json()) as Row[]
-      all.push(...rows)
-      if (rows.length < pageSize) break
+  private assertConfigurado(): void {
+    if (!this.configurado)
+      throw new Error(
+        'Configure a URL do Power Automate em Configurações e clique em Salvar.',
+      )
+  }
+
+  // Transporte único: POST para o fluxo do PA (que segura o secret), que executa
+  // a operação no Supabase e devolve o corpo da API. Mesmo contrato do C#.
+  private async pa(payload: Record<string, unknown>): Promise<string> {
+    this.assertConfigurado()
+    let res: Response
+    try {
+      res = await fetch(this.paUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+    } catch (e) {
+      throw new Error('Falha de conexão com o Power Automate: ' + (e as Error).message)
     }
-    return all
+    const txt = await res.text()
+    if (!res.ok) throw new Error(`Power Automate ${res.status}: ${txt || res.statusText}`)
+    return txt
+  }
+
+  // SELECT via PA (op=SELECT). O PostgREST do Supabase devolve todas as linhas
+  // numa só resposta (sem teto por padrão), como no LNF-Coreon.
+  private async getAll(table: string, params: string): Promise<Row[]> {
+    const order =
+      ORDER_BY[table] && !params.includes('order=') ? `&order=${ORDER_BY[table]}` : ''
+    const txt = await this.pa({ op: 'SELECT', tabela: table, query: `${params}${order}` })
+    return parseRows(txt)
   }
 
   private async upsert(table: string, rows: Row[], onConflict: string | null): Promise<void> {
     if (rows.length === 0) return
     const chunk = 500
     for (let i = 0; i < rows.length; i += chunk) {
-      const slice = rows.slice(i, i + chunk)
-      const q = onConflict ? `?on_conflict=${onConflict}` : ''
-      const res = await fetch(`${this.base}${table}${q}`, {
-        method: 'POST',
-        headers: this.headers({ Prefer: 'resolution=merge-duplicates,return=minimal' }),
-        body: JSON.stringify(slice),
-      })
-      if (!res.ok) await this.erro(res)
+      const payload: Record<string, unknown> = {
+        op: 'UPSERT',
+        tabela: table,
+        linhas: rows.slice(i, i + chunk),
+        usuario: this.usuario,
+      }
+      if (onConflict) payload.conflito = onConflict
+      await this.pa(payload)
     }
   }
 
   private async del(table: string, filter: string): Promise<void> {
-    const res = await fetch(`${this.base}${table}?${filter}`, {
-      method: 'DELETE',
-      headers: this.headers({ Prefer: 'return=minimal' }),
-    })
-    if (!res.ok) await this.erro(res)
+    await this.pa({ op: 'DELETE', tabela: table, filtro: filter, usuario: this.usuario })
   }
 
   // ── leitura: reconstrói o shape JSON legado a partir das tabelas ───────────
@@ -510,10 +539,10 @@ export class SupabaseService {
   // ── introspecção / editor universal ───────────────────────────────────────
 
   // Documento OpenAPI da raiz do PostgREST (descreve tabelas/colunas/PKs).
+  // Requer que o fluxo do PA trate op=OPENAPI (proxy do GET /rest/v1/).
   async openApi(): Promise<unknown> {
-    const res = await fetch(this.base, { headers: this.headers() })
-    if (!res.ok) await this.erro(res)
-    return res.json()
+    const txt = await this.pa({ op: 'OPENAPI' })
+    return parseJson(txt)
   }
 
   // Uma página de linhas de qualquer tabela (paginação/ordem/filtros do caller).
@@ -526,9 +555,7 @@ export class SupabaseService {
     if (opts.limit != null) parts.push(`limit=${opts.limit}`)
     if (opts.offset != null) parts.push(`offset=${opts.offset}`)
     if (opts.filtros) parts.push(opts.filtros)
-    const res = await fetch(`${this.base}${table}?${parts.join('&')}`, { headers: this.headers() })
-    if (!res.ok) await this.erro(res)
-    return (await res.json()) as Row[]
+    return this.getAll(table, parts.join('&'))
   }
 
   async salvarLinha(table: string, payload: Row, onConflict: string | null): Promise<void> {
