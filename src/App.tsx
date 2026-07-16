@@ -4,6 +4,7 @@ import { Layout, type Page } from './components/Layout'
 import { Mapeamento } from './pages/Mapeamento'
 import { Cadastros } from './pages/Cadastros'
 import { Tabelas } from './pages/Tabelas'
+import { Historico } from './pages/Historico'
 import { Configuracoes } from './pages/Configuracoes'
 
 export default function App() {
@@ -15,6 +16,7 @@ export default function App() {
         {page === 'mapeamento' && <Mapeamento />}
         {page === 'cadastros' && <Cadastros />}
         {page === 'tabelas' && <Tabelas />}
+        {page === 'historico' && <Historico />}
         {page === 'config' && <Configuracoes />}
       </Layout>
     </AppProvider>

@@ -73,6 +73,21 @@ código quando surge tabela/coluna nova.
 Os editores específicos (Cadastros) foram **mantidos** — a ideia é aposentá-los depois que o
 universal provar que roda bem (principalmente a edição de jsonb).
 
+### Mapeamento buscando da tabela `cadastros` + status
+
+O Mapeamento **deixou de depender de colar JSON**: ele lista os **casos pendentes** da tabela
+`cadastros` (que o `.exe` popula no fim do Executar quando há "Sem pedido" + item de pedido sem
+match, Qtd NF=0). Clicar num caso carrega o `payload` ({Nfs, PedidosDict}) no fluxo de mapeamento.
+Após analisar, o usuário marca o caso como **Concluído** ou **Descaracterizado** (o `.exe` gravou
+como `pendente`); o `pg_cron` apaga concluido/descaracterizado após 3 dias. O colar-JSON continua
+como fallback recolhível. Há também a flag **Cód → Ref** (paridade com o checkbox do
+MapearMaterialForm do `.exe`): grava o código do pedido como referência.
+
+### Aba Histórico
+
+Lê a tabela `historico` (todas as operações, todos os usuários), com busca geral, filtro por
+ação/usuário e **exportação CSV**. Paginada ("Carregar mais").
+
 ---
 
 ## 1. Contexto e Decisões
