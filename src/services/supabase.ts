@@ -283,42 +283,19 @@ export class SupabaseService {
     return txt
   }
 
-  // SELECT via PA (op=SELECT). O PostgREST/Supabase tem TETO de 1000 linhas por
-  // resposta — então full reads (sem limit do caller) são paginados de 1000 em
-  // 1000. O caller que já passou limit= recebe uma página só. usuario vai junto
-  // (o fluxo valida quem pode ler).
+  // SELECT via PA (op=SELECT), numa chamada só. O teto de linhas é controlado
+  // pelo "Max rows" do Supabase (mantido alto o bastante pros dados). usuario
+  // vai junto (o fluxo valida quem pode ler).
   private async getAll(table: string, params: string): Promise<Row[]> {
     const order =
       ORDER_BY[table] && !params.includes('order=') ? `&order=${ORDER_BY[table]}` : ''
-
-    if (params.includes('limit=')) {
-      const txt = await this.pa({
-        op: 'SELECT',
-        tabela: table,
-        query: `${params}${order}`,
-        usuario: this.usuario,
-      })
-      return parseRows(txt)
-    }
-
-    // Pede um bloco grande; só continua paginando se o Supabase CAPAR (Max rows).
-    // A 1ª página define o teto efetivo — se você subir o "Max rows" no Supabase
-    // acima do total, isso vira ~1 chamada.
-    const BLOCO = 100000
-    const all: Row[] = []
-    let cap = -1
-    let offset = 0
-    for (;;) {
-      const q = `${params}${order}&limit=${BLOCO}&offset=${offset}`
-      const rows = parseRows(
-        await this.pa({ op: 'SELECT', tabela: table, query: q, usuario: this.usuario }),
-      )
-      all.push(...rows)
-      if (cap < 0) cap = rows.length
-      offset += rows.length
-      if (rows.length === 0 || rows.length < cap) break
-    }
-    return all
+    const txt = await this.pa({
+      op: 'SELECT',
+      tabela: table,
+      query: `${params}${order}`,
+      usuario: this.usuario,
+    })
+    return parseRows(txt)
   }
 
   private async upsert(table: string, rows: Row[], onConflict: string | null): Promise<void> {
