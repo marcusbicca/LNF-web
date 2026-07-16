@@ -113,6 +113,8 @@ const ACESSOS = [
   'planejamento',
   'compras',
   'fiscal',
+  'lancamentoFuturo',
+  'internet',
 ] as const
 
 const ACESSO_LABELS: Record<string, string> = {
@@ -124,6 +126,8 @@ const ACESSO_LABELS: Record<string, string> = {
   planejamento: 'Planejamento',
   compras: 'Compras',
   fiscal: 'Fiscal',
+  lancamentoFuturo: 'Lançamento Futuro',
+  internet: 'Internet (MeuDanfe)',
 }
 
 function acessosVazio(): Record<string, boolean> {

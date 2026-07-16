@@ -49,7 +49,7 @@ export function Layout({ page, onNavigate, children }: LayoutProps) {
             page === 'historico' ? 'text-green-400' : 'text-zinc-500 hover:text-zinc-300'
           }`}
         >
-          Histórico
+          Histórico / Debug
         </button>
         <button
           onClick={() => onNavigate('config')}
