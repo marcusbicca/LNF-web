@@ -6,13 +6,21 @@
 
 ## 0. Migração para Supabase (2026-07) — LEIA PRIMEIRO
 
-O app **deixou de usar o GitHub/LNF-files** como camada de dados. Agora lê e grava
-**direto no Supabase (PostgREST), sem Power Automate**. As telas continuam iguais; só
-mudou a fonte dos dados.
+O app **deixou de usar o GitHub/LNF-files** como camada de dados. Agora lê e grava no
+**Supabase (PostgREST) através de um fluxo do Power Automate** — o mesmo fluxo que o
+LNF-Coreon usa. As telas continuam iguais; só mudou a fonte dos dados.
 
-**Configurações**: em vez de GitHub token/owner/repo, informe **Supabase URL** + **Supabase
-Key**. Para gravar é preciso a **secret key** (service_role); a publishable/anon só lê (RLS).
-A key fica só no localStorage do navegador (mesmo tradeoff do antigo token).
+**Por que via Power Automate e não direto:** a secret key (service_role) do Supabase
+**não pode ser usada no browser** — ela ignora o RLS e o Supabase bloqueia de propósito
+(`401 Forbidden use of secret API key in browser`). A publishable/anon key é browser-safe
+mas só lê. Para escrever sem expor secret e sem montar login, o browser chama o **fluxo do
+PA**, que guarda o secret no servidor e executa a chamada REST. É o mesmo padrão do `.exe`.
+
+**Configurações**: informe a **URL do fluxo do Power Automate** (no lugar da antiga key) +
+**Usuário**. O fluxo recebe `{ op:"SELECT"|"UPSERT"|"DELETE"|"OPENAPI", tabela,
+query|linhas|conflito|filtro, usuario }` e devolve o corpo da API. O campo Usuário vai no
+payload de escrita e o fluxo decide quem pode gravar (mesmo controle do userList do Coreon).
+A URL fica só no localStorage do navegador.
 
 **Mapa arquivo → tabela** (o "path" virou seletor lógico pelo basename):
 
@@ -25,9 +33,11 @@ A key fica só no localStorage do navegador (mesmo tradeoff do antigo token).
 | `termos_globais.json`| `termos_globais`  | id (surrogate)        |
 
 **Arquitetura da camada de dados** (`src/services/supabase.ts`):
-- `lerArquivo(path)` — SELECT paginado (contorna o teto de 1000 linhas do PostgREST) e
-  **reconstrói o shape JSON legado** que as telas já consomem. O mapa coluna↔chave espelha
-  o lado C# (`SupabaseSync`/`SupabaseStore` do LNF-Coreon).
+- Transporte único `pa(payload)` — POST no fluxo do PA. `getAll` = op SELECT; `upsert` = op
+  UPSERT (chunk 500); `del` = op DELETE; `openApi` = op OPENAPI. Toleram a resposta do PA
+  vindo como array, string-JSON ou embrulhada (`{body|value|data}`).
+- `lerArquivo(path)` — SELECT e **reconstrói o shape JSON legado** que as telas já consomem.
+  O mapa coluna↔chave espelha o lado C# (`SupabaseSync`/`SupabaseStore` do LNF-Coreon).
 - `gravarArquivo('itens.json', …)` — escrita de materiais por **diff por linha** (upsert só
   do que mudou + delete do que sumiu). Elimina o truncamento de arquivo inteiro que causava
   perda de dados.
@@ -35,18 +45,20 @@ A key fica só no localStorage do navegador (mesmo tradeoff do antigo token).
   os materiais via FK cascade), `salvarUsuario/removerUsuario`, `salvarCentro/removerCentro`.
 
 **Importação única LNF-files → Supabase** (`src/services/importLnfFiles.ts`): botão em
-Configurações puxa os JSONs atuais do GitHub e faz **upsert** no banco (fornecedores antes de
-materiais por causa da FK; termos = replace-all). Aditivo/idempotente. Requer um GitHub token
-(leitura do LNF-files, não é salvo) + a secret key do Supabase.
+Configurações puxa os JSONs atuais do GitHub e faz **upsert** no banco via PA (fornecedores
+antes de materiais por causa da FK; termos = replace-all). Aditivo/idempotente. Requer um
+GitHub token (leitura do LNF-files, não é salvo) + a URL do PA já configurada.
 
-**Segurança**: se colar a secret key do Supabase publicamente em algum momento, **rotacione-a**
-no dashboard (o novo modelo de key é rotacionável). O `github.ts` foi mantido só para a
-importação única.
+**Contrato do fluxo do PA** (o mesmo do `.exe`): além de SELECT/UPSERT/DELETE, o editor
+universal (aba Tabelas) usa **op=OPENAPI** (proxy do `GET /rest/v1/`). Se o fluxo ainda não
+tratar esse op, só a aba Tabelas fica indisponível — Cadastros e Mapeamento funcionam com
+SELECT/UPSERT/DELETE. O `github.ts` foi mantido só para a importação única.
 
 ### Editor universal de tabelas (aba "Tabelas")
 
-Página que **descobre o schema sozinha** via OpenAPI do PostgREST (`GET /rest/v1/`) e monta o
-formulário automaticamente — não precisa mexer no código quando surge tabela/coluna nova.
+Página que **descobre o schema sozinha** via OpenAPI do PostgREST (op=OPENAPI no fluxo do PA,
+que faz proxy do `GET /rest/v1/`) e monta o formulário automaticamente — não precisa mexer no
+código quando surge tabela/coluna nova.
 
 - `src/services/schema.ts` — `parseTabelas(openapi)` → metadados (tipo de cada coluna, PK,
   required, autoPk). `paraEdicao`/`paraGravar` convertem valor do banco ↔ representação do
@@ -60,6 +72,21 @@ formulário automaticamente — não precisa mexer no código quando surge tabel
 
 Os editores específicos (Cadastros) foram **mantidos** — a ideia é aposentá-los depois que o
 universal provar que roda bem (principalmente a edição de jsonb).
+
+### Mapeamento buscando da tabela `cadastros` + status
+
+O Mapeamento **deixou de depender de colar JSON**: ele lista os **casos pendentes** da tabela
+`cadastros` (que o `.exe` popula no fim do Executar quando há "Sem pedido" + item de pedido sem
+match, Qtd NF=0). Clicar num caso carrega o `payload` ({Nfs, PedidosDict}) no fluxo de mapeamento.
+Após analisar, o usuário marca o caso como **Concluído** ou **Descaracterizado** (o `.exe` gravou
+como `pendente`); o `pg_cron` apaga concluido/descaracterizado após 3 dias. O colar-JSON continua
+como fallback recolhível. Há também a flag **Cód → Ref** (paridade com o checkbox do
+MapearMaterialForm do `.exe`): grava o código do pedido como referência.
+
+### Aba Histórico
+
+Lê a tabela `historico` (todas as operações, todos os usuários), com busca geral, filtro por
+ação/usuário e **exportação CSV**. Paginada ("Carregar mais").
 
 ---
 

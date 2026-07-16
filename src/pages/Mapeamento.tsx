@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useApp } from '../context/AppContext'
+import { SupabaseService } from '../services/supabase'
 import type { CadastroJson, FatorEntry, ItensJson, PedidoItem } from '../types'
 import { format, parseLenient } from '../utils/json'
 
@@ -21,6 +22,7 @@ import { format, parseLenient } from '../utils/json'
 interface ItemNf {
   id: string
   nfChave: string
+  fornecedor: string
   referencia: string
   codigo: string
   descricao: string
@@ -53,6 +55,10 @@ interface Vinculo {
   umbsIguais: boolean
   de: string
   para: string
+  // Registra o CÓDIGO do pedido como referência (em vez da ref da NF) — para
+  // forns que embutem o código no xProd e cuja ref extraída é inútil. Espelha o
+  // checkbox "Cód → Ref" do MapearMaterialForm do .exe.
+  codComoRef?: boolean
   // já existia no itens.json ao carregar (mostrado como "já registrado",
   // não é reescrito no Registrar a menos que seja refeito).
   preexistente?: boolean
@@ -70,6 +76,13 @@ function parseNum(s: string): number {
 function num(v: number): string {
   if (!Number.isFinite(v)) return '0'
   return parseFloat(v.toFixed(6)).toString()
+}
+
+// Data/hora legível (pt-BR) a partir do created_at ISO do Supabase.
+function fmtDataHora(v: unknown): string {
+  if (!v) return '—'
+  const d = new Date(String(v))
+  return Number.isNaN(d.getTime()) ? String(v) : d.toLocaleString('pt-BR')
 }
 
 function str(d: PedidoItem, k: string): string {
@@ -142,6 +155,7 @@ function carregarDados(dict: Record<string, PedidoItem[]>): CargaResultado {
           cb1Dict.set(key, {
             id: 'nf:' + key,
             nfChave,
+            fornecedor: str(linha, 'Fornecedor'),
             referencia: refNF,
             codigo: str(linha, 'Código'),
             descricao: str(linha, 'Descrição'),
@@ -252,17 +266,23 @@ function convToJson(de: string, para: string, fator: number): FatorEntry {
 }
 
 // Aplica os vínculos no itens.json (espelha AplicarItemNoDict/UpsertItens).
-// Ao gravar uma referência, remove-a de qualquer OUTRO código do mesmo
-// fornecedor (refazer limpo: uma referência mapeia para um único código).
-function aplicarVinculos(base: ItensJson, fornecedor: string, vinculos: Vinculo[]): ItensJson {
+// Agrupa por fornecedor de CADA vínculo (v.nf.fornecedor) — suporta lotes
+// multi-fornecedor, igual ao Registrar do .exe. Ao gravar uma referência,
+// remove-a de qualquer OUTRO código do MESMO fornecedor (refazer limpo: uma
+// referência mapeia para um único código).
+function aplicarVinculos(base: ItensJson, fornecedorDefault: string, vinculos: Vinculo[]): ItensJson {
   const novo = JSON.parse(JSON.stringify(base)) as ItensJson
-  const fkey = acharFornecedorKey(novo, fornecedor) ?? fornecedor
-  if (!novo[fkey]) novo[fkey] = {}
-  const itens = novo[fkey]
 
   for (const v of vinculos) {
+    const forn = (v.nf.fornecedor || fornecedorDefault || '').trim()
+    if (!forn) continue
+    const fkey = acharFornecedorKey(novo, forn) ?? forn
+    if (!novo[fkey]) novo[fkey] = {}
+    const itens = novo[fkey]
+
     const cod = (v.pedido.codigo ?? '').trim()
-    const ref = (v.nf.referencia ?? '').trim()
+    // codComoRef → a referência gravada é o próprio código (espelha o .exe).
+    const ref = (v.codComoRef ? cod : (v.nf.referencia ?? '')).trim()
     if (!cod || !ref) continue
 
     // Remove a referência de outros códigos (e descarta itens que ficarem vazios).
@@ -304,11 +324,21 @@ function aplicarVinculos(base: ItensJson, fornecedor: string, vinculos: Vinculo[
 export function Mapeamento() {
   const { config, itens, carregandoItens, erroItens, gravarItens } = useApp()
 
+  const svc = useMemo(
+    () => (config ? new SupabaseService(config.paUrl, config.usuario) : null),
+    [config],
+  )
+
   // Entrada de JSON
   const [jsonTexto, setJsonTexto] = useState('')
   const [mostrarTextarea, setMostrarTextarea] = useState(false)
   const [erroJson, setErroJson] = useState<string | null>(null)
   const [carregado, setCarregado] = useState(false)
+
+  // Casos pendentes vindos da tabela cadastros (fim do colar-JSON).
+  const [casos, setCasos] = useState<Array<Record<string, unknown>>>([])
+  const [carregandoCasos, setCarregandoCasos] = useState(false)
+  const [casoSelId, setCasoSelId] = useState<number | null>(null)
 
   // Dados de trabalho
   const [fornecedor, setFornecedor] = useState('')
@@ -329,6 +359,7 @@ export function Mapeamento() {
   const [fator, setFator] = useState('1')
   const [de, setDe] = useState('')
   const [para, setPara] = useState('')
+  const [codComoRef, setCodComoRef] = useState(false)
 
   // Commit
   const [commitando, setCommitando] = useState(false)
@@ -380,13 +411,11 @@ export function Mapeamento() {
   const mostrarDePara = !!cb1Sel && !!cb2Sel && !umbsIguais
 
   // ── Parse do JSON ──────────────────────────────────────────────────────────
-  const parseJson = useCallback(
-    (texto: string) => {
+  const carregarCadastro = useCallback(
+    (parsed: CadastroJson) => {
       setErroJson(null)
       try {
-        const parsed = parseLenient<CadastroJson>(texto)
         if (!parsed.PedidosDict) throw new Error('Campo PedidosDict ausente — JSON inválido')
-        setJsonTexto(format(parsed))
         const { fornecedor: forn, cb1: c1, cb2: c2, nfPedidos: np } = carregarDados(parsed.PedidosDict)
         setNfPedidos(np)
 
@@ -473,6 +502,21 @@ export function Mapeamento() {
     [itens],
   )
 
+  // Paste manual (fallback): parseia o texto e carrega.
+  const parseJson = useCallback(
+    (texto: string) => {
+      try {
+        const parsed = parseLenient<CadastroJson>(texto)
+        setJsonTexto(format(parsed))
+        carregarCadastro(parsed)
+      } catch (e) {
+        setErroJson((e as Error).message)
+        setCarregado(false)
+      }
+    },
+    [carregarCadastro],
+  )
+
   async function colarClipboard() {
     try {
       const texto = await navigator.clipboard.readText()
@@ -498,6 +542,47 @@ export function Mapeamento() {
     setCb1SelId(null)
     setCb2SelId(null)
     setStatusCommit(null)
+    setCasoSelId(null)
+  }
+
+  // ── Casos pendentes (tabela cadastros) ─────────────────────────────────────
+  const carregarCasos = useCallback(async () => {
+    if (!svc) return
+    setCarregandoCasos(true)
+    try {
+      const rows = await svc.lerLinhas('cadastros', {
+        order: 'created_at.desc',
+        filtros: 'status=eq.pendente',
+        limit: 200,
+      })
+      setCasos(rows)
+    } catch (e) {
+      setErroJson((e as Error).message)
+    } finally {
+      setCarregandoCasos(false)
+    }
+  }, [svc])
+
+  useEffect(() => {
+    if (config?.paUrl) void carregarCasos()
+  }, [config?.paUrl, carregarCasos])
+
+  function selecionarCaso(caso: Record<string, unknown>) {
+    const payload = (caso.payload ?? {}) as CadastroJson
+    carregarCadastro(payload)
+    setCasoSelId(typeof caso.id === 'number' ? caso.id : Number(caso.id))
+  }
+
+  async function mudarStatus(novoStatus: 'concluido' | 'descaracterizado') {
+    if (!svc || casoSelId == null) return
+    try {
+      await svc.salvarLinha('cadastros', { id: casoSelId, status: novoStatus }, 'id')
+      setStatusCommit(`✅ Caso marcado como "${novoStatus}".`)
+      await carregarCasos()
+      limpar()
+    } catch (e) {
+      setStatusCommit(`❌ ${(e as Error).message}`)
+    }
   }
 
   // ── Seleção CB1: auto-match (a reordenação do CB2 é derivada) ──────────────
@@ -538,10 +623,12 @@ export function Mapeamento() {
     // seleção anterior — era a causa da conversão errada). Convenção do
     // ExecutarService: universal → conversao=Fator; dirA(De=UMB NF) → 1/Fator;
     // dirB(De=UMB pedido) → Fator. qtdSAP = qtdNF/conversao; valor = raw*conversao.
-    // Padrão de=UMB do pedido (dirB). A ordem não importa — Inverter ajusta o fator.
+    // Padrão De=UMB da NF, Para=UMB do pedido — IGUAL ao AtualizarDetalhe do .exe
+    // (com De=UMB NF, um fator digitado à mão é interpretado como 1/f). A ordem
+    // não importa pro resultado final — Sugerir/Inverter ajustam o fator.
     if (mostrarDePara) {
-      setDe(umbPed)
-      setPara(umbNf)
+      setDe(umbNf)
+      setPara(umbPed)
     } else {
       setDe('')
       setPara('')
@@ -615,8 +702,9 @@ export function Mapeamento() {
       setStatusCommit('⚠️ Selecione um item em cada lista.')
       return
     }
-    const referencia = (cb1Sel.referencia ?? '').trim()
     const codigo = (cb2Sel.codigo ?? '').trim()
+    // Com a flag Cód → Ref, a referência passa a ser o próprio código do pedido.
+    const referencia = codComoRef ? codigo : (cb1Sel.referencia ?? '').trim()
     if (!referencia || !codigo) {
       setStatusCommit('⚠️ Código ou referência vazios.')
       return
@@ -631,6 +719,7 @@ export function Mapeamento() {
       umbsIguais,
       de: umbsIguais ? '' : de.trim(),
       para: umbsIguais ? '' : para.trim(),
+      codComoRef,
     }
 
     setVinculos(prev => [...prev, v])
@@ -705,54 +794,92 @@ export function Mapeamento() {
     )
   }
 
-  // ── Entrada de JSON ────────────────────────────────────────────────────────
+  // ── Entrada: casos pendentes da tabela cadastros (+ fallback colar JSON) ────
   if (!carregado) {
     return (
       <div className="p-4 space-y-3 max-w-2xl mx-auto">
-        <div className="flex gap-2">
+        <div className="flex items-center justify-between">
+          <h2 className="font-semibold">Casos de cadastro pendentes</h2>
           <button
-            onClick={() => void colarClipboard()}
-            className="flex-1 bg-zinc-800 hover:bg-zinc-700 border border-zinc-600 text-white py-3.5 rounded-lg font-medium transition-colors"
+            onClick={() => void carregarCasos()}
+            className="text-zinc-400 hover:text-zinc-200 text-sm"
           >
-            📋 Colar JSON do Clipboard
-          </button>
-          <button
-            onClick={() => setMostrarTextarea(v => !v)}
-            title="Campo manual"
-            className="px-4 bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 text-zinc-400 rounded-lg transition-colors"
-          >
-            {mostrarTextarea ? '▲' : '▼'}
+            ⟳ Atualizar
           </button>
         </div>
 
-        {mostrarTextarea && (
-          <>
-            <textarea
-              value={jsonTexto}
-              onChange={e => setJsonTexto(e.target.value)}
-              placeholder='{"Sucesso": true, "PedidosDict": {...}}'
-              rows={8}
-              className="w-full bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-2 text-xs font-mono focus:outline-none focus:border-green-500 resize-none"
-            />
-            <button
-              onClick={() => parseJson(jsonTexto)}
-              className="w-full bg-green-700 hover:bg-green-600 text-white py-2.5 rounded-lg font-medium transition-colors"
-            >
-              Carregar
-            </button>
-          </>
-        )}
+        {carregandoCasos && <p className="text-zinc-400 text-sm">Carregando casos...</p>}
+
+        <div className="border border-zinc-800 rounded-lg divide-y divide-zinc-800 max-h-96 overflow-y-auto">
+          {casos.map(c => {
+            const payload = (c.payload ?? {}) as { Nfs?: Record<string, unknown> }
+            const nNfs = Object.keys(payload.Nfs ?? {}).length
+            return (
+              <button
+                key={String(c.id)}
+                onClick={() => selecionarCaso(c)}
+                className="w-full text-left px-3 py-2.5 hover:bg-zinc-800/60 transition-colors"
+              >
+                <p className="text-sm text-zinc-200 truncate">
+                  {String(c.fornecedor || '(sem fornecedor)')}
+                </p>
+                <p className="text-xs text-zinc-500 mt-0.5 font-mono">
+                  {nNfs} NF(s) · {String(c.usuario || '—')} · {fmtDataHora(c.created_at)}
+                </p>
+              </button>
+            )
+          })}
+          {!carregandoCasos && casos.length === 0 && (
+            <p className="text-xs text-zinc-500 p-3">Nenhum caso pendente.</p>
+          )}
+        </div>
+
+        {/* Fallback: colar JSON manual */}
+        <details className="text-sm">
+          <summary className="text-zinc-500 cursor-pointer hover:text-zinc-300 select-none">
+            Ou colar o JSON manualmente
+          </summary>
+          <div className="mt-2 space-y-2">
+            <div className="flex gap-2">
+              <button
+                onClick={() => void colarClipboard()}
+                className="flex-1 bg-zinc-800 hover:bg-zinc-700 border border-zinc-600 text-white py-2.5 rounded-lg font-medium transition-colors"
+              >
+                📋 Colar do Clipboard
+              </button>
+              <button
+                onClick={() => setMostrarTextarea(v => !v)}
+                title="Campo manual"
+                className="px-4 bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 text-zinc-400 rounded-lg transition-colors"
+              >
+                {mostrarTextarea ? '▲' : '▼'}
+              </button>
+            </div>
+            {mostrarTextarea && (
+              <>
+                <textarea
+                  value={jsonTexto}
+                  onChange={e => setJsonTexto(e.target.value)}
+                  placeholder='{"Sucesso": true, "PedidosDict": {...}}'
+                  rows={8}
+                  className="w-full bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-2 text-xs font-mono focus:outline-none focus:border-green-500 resize-none"
+                />
+                <button
+                  onClick={() => parseJson(jsonTexto)}
+                  className="w-full bg-green-700 hover:bg-green-600 text-white py-2.5 rounded-lg font-medium transition-colors"
+                >
+                  Carregar
+                </button>
+              </>
+            )}
+          </div>
+        </details>
 
         {erroJson && (
           <div className="bg-red-950 border border-red-800 rounded-lg p-3 text-red-300 text-sm">
             ❌ {erroJson}
           </div>
         )}
-
-        <p className="text-xs text-zinc-500 pt-2">
-          Cole o JSON gerado pelo LNF-Coreon. O mapeamento cruza itens da NF "Sem pedido" com itens
-          do pedido não consumidos (Qtd NF = 0).
-        </p>
       </div>
     )
   }
@@ -765,9 +892,29 @@ export function Mapeamento() {
         <div className="min-w-0">
           <h2 className="font-semibold truncate">Mapeamento · {fornecedor || '(sem fornecedor)'}</h2>
         </div>
-        <button onClick={limpar} className="text-zinc-500 hover:text-zinc-300 text-sm shrink-0">
-          ✕ Limpar
-        </button>
+        <div className="flex items-center gap-2 shrink-0">
+          {casoSelId != null && (
+            <>
+              <button
+                onClick={() => void mudarStatus('concluido')}
+                className="text-xs bg-green-800 hover:bg-green-700 text-green-100 px-2.5 py-1 rounded transition-colors"
+                title="Marca o caso como concluído (some do banco em 3 dias)"
+              >
+                ✓ Concluído
+              </button>
+              <button
+                onClick={() => void mudarStatus('descaracterizado')}
+                className="text-xs bg-zinc-800 hover:bg-zinc-700 text-zinc-300 px-2.5 py-1 rounded transition-colors"
+                title="Marca como descaracterizado (não era caso de cadastro)"
+              >
+                Descaracterizar
+              </button>
+            </>
+          )}
+          <button onClick={limpar} className="text-zinc-500 hover:text-zinc-300 text-sm">
+            ✕ Limpar
+          </button>
+        </div>
       </div>
 
       {/* Seletor de NF */}
@@ -906,6 +1053,16 @@ export function Mapeamento() {
               )}
             </div>
 
+            <label className="flex items-center gap-2 text-sm text-zinc-300 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={codComoRef}
+                onChange={e => setCodComoRef(e.target.checked)}
+                className="w-4 h-4 accent-green-500"
+              />
+              Cód → Ref <span className="text-zinc-500 text-xs">(usa o código como referência)</span>
+            </label>
+
             <div className="flex gap-2">
               <button
                 onClick={sugerir}
@@ -956,7 +1113,8 @@ export function Mapeamento() {
                     <span className="truncate">{v.pedido.descricao}</span>
                   </p>
                   <p className="text-xs text-zinc-400 font-mono mt-0.5">
-                    {v.pedido.codigo} · <span className="text-white">{v.nf.referencia}</span> · fator{' '}
+                    {v.pedido.codigo} ·{' '}
+                    <span className="text-white">{v.codComoRef ? v.pedido.codigo : v.nf.referencia}</span> · fator{' '}
                     {num(v.fator)} · {v.umbsIguais ? 'universal' : `${v.de} → ${v.para}`}
                   </p>
                 </div>

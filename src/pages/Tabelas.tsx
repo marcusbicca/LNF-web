@@ -26,7 +26,7 @@ const PAGE = 100
 export function Tabelas() {
   const { config } = useApp()
   const svc = useMemo(
-    () => (config ? new SupabaseService(config.supabaseUrl, config.supabaseKey) : null),
+    () => (config ? new SupabaseService(config.paUrl, config.usuario) : null),
     [config],
   )
 

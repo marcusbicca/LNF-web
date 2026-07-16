@@ -282,7 +282,7 @@ export function Cadastros() {
   )
 
   const svc = useMemo(
-    () => (config ? new SupabaseService(config.supabaseUrl, config.supabaseKey) : null),
+    () => (config ? new SupabaseService(config.paUrl, config.usuario) : null),
     [config],
   )
 
