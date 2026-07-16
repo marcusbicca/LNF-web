@@ -301,15 +301,22 @@ export class SupabaseService {
       return parseRows(txt)
     }
 
-    const pageSize = 1000
+    // Pede um bloco grande; só continua paginando se o Supabase CAPAR (Max rows).
+    // A 1ª página define o teto efetivo — se você subir o "Max rows" no Supabase
+    // acima do total, isso vira ~1 chamada.
+    const BLOCO = 100000
     const all: Row[] = []
-    for (let offset = 0; ; offset += pageSize) {
-      const q = `${params}${order}&limit=${pageSize}&offset=${offset}`
+    let cap = -1
+    let offset = 0
+    for (;;) {
+      const q = `${params}${order}&limit=${BLOCO}&offset=${offset}`
       const rows = parseRows(
         await this.pa({ op: 'SELECT', tabela: table, query: q, usuario: this.usuario }),
       )
       all.push(...rows)
-      if (rows.length < pageSize) break
+      if (cap < 0) cap = rows.length
+      offset += rows.length
+      if (rows.length === 0 || rows.length < cap) break
     }
     return all
   }
