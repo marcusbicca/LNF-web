@@ -338,7 +338,7 @@ export function Mapeamento() {
   // Casos pendentes vindos da tabela cadastros (fim do colar-JSON).
   const [casos, setCasos] = useState<Array<Record<string, unknown>>>([])
   const [carregandoCasos, setCarregandoCasos] = useState(false)
-  const [casoSelId, setCasoSelId] = useState<number | null>(null)
+  const [casoSelNf, setCasoSelNf] = useState<string | null>(null)
 
   // Dados de trabalho
   const [fornecedor, setFornecedor] = useState('')
@@ -542,7 +542,7 @@ export function Mapeamento() {
     setCb1SelId(null)
     setCb2SelId(null)
     setStatusCommit(null)
-    setCasoSelId(null)
+    setCasoSelNf(null)
   }
 
   // ── Casos pendentes (tabela cadastros) ─────────────────────────────────────
@@ -570,13 +570,15 @@ export function Mapeamento() {
   function selecionarCaso(caso: Record<string, unknown>) {
     const payload = (caso.payload ?? {}) as CadastroJson
     carregarCadastro(payload)
-    setCasoSelId(typeof caso.id === 'number' ? caso.id : Number(caso.id))
+    setCasoSelNf(caso.nf_chaves != null ? String(caso.nf_chaves) : null)
   }
 
   async function mudarStatus(novoStatus: 'concluido' | 'descaracterizado') {
-    if (!svc || casoSelId == null) return
+    if (!svc || casoSelNf == null) return
     try {
-      await svc.salvarLinha('cadastros', { id: casoSelId, status: novoStatus }, 'id')
+      // UPSERT na chave de negócio nf_chaves (não a PK 'id', que é identity —
+      // enviar id explícito quebra o INSERT do upsert). On conflict → UPDATE status.
+      await svc.salvarLinha('cadastros', { nf_chaves: casoSelNf, status: novoStatus }, 'nf_chaves')
       setStatusCommit(`✅ Caso marcado como "${novoStatus}".`)
       await carregarCasos()
       limpar()
@@ -893,7 +895,7 @@ export function Mapeamento() {
           <h2 className="font-semibold truncate">Mapeamento · {fornecedor || '(sem fornecedor)'}</h2>
         </div>
         <div className="flex items-center gap-2 shrink-0">
-          {casoSelId != null && (
+          {casoSelNf != null && (
             <>
               <button
                 onClick={() => void mudarStatus('concluido')}
