@@ -283,19 +283,35 @@ export class SupabaseService {
     return txt
   }
 
-  // SELECT via PA (op=SELECT). O PostgREST do Supabase devolve todas as linhas
-  // numa só resposta (sem teto por padrão), como no LNF-Coreon.
+  // SELECT via PA (op=SELECT). O PostgREST/Supabase tem TETO de 1000 linhas por
+  // resposta — então full reads (sem limit do caller) são paginados de 1000 em
+  // 1000. O caller que já passou limit= recebe uma página só. usuario vai junto
+  // (o fluxo valida quem pode ler).
   private async getAll(table: string, params: string): Promise<Row[]> {
     const order =
       ORDER_BY[table] && !params.includes('order=') ? `&order=${ORDER_BY[table]}` : ''
-    // usuario também na leitura — o fluxo valida quem pode ler.
-    const txt = await this.pa({
-      op: 'SELECT',
-      tabela: table,
-      query: `${params}${order}`,
-      usuario: this.usuario,
-    })
-    return parseRows(txt)
+
+    if (params.includes('limit=')) {
+      const txt = await this.pa({
+        op: 'SELECT',
+        tabela: table,
+        query: `${params}${order}`,
+        usuario: this.usuario,
+      })
+      return parseRows(txt)
+    }
+
+    const pageSize = 1000
+    const all: Row[] = []
+    for (let offset = 0; ; offset += pageSize) {
+      const q = `${params}${order}&limit=${pageSize}&offset=${offset}`
+      const rows = parseRows(
+        await this.pa({ op: 'SELECT', tabela: table, query: q, usuario: this.usuario }),
+      )
+      all.push(...rows)
+      if (rows.length < pageSize) break
+    }
+    return all
   }
 
   private async upsert(table: string, rows: Row[], onConflict: string | null): Promise<void> {
