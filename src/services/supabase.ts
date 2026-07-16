@@ -288,7 +288,13 @@ export class SupabaseService {
   private async getAll(table: string, params: string): Promise<Row[]> {
     const order =
       ORDER_BY[table] && !params.includes('order=') ? `&order=${ORDER_BY[table]}` : ''
-    const txt = await this.pa({ op: 'SELECT', tabela: table, query: `${params}${order}` })
+    // usuario também na leitura — o fluxo valida quem pode ler.
+    const txt = await this.pa({
+      op: 'SELECT',
+      tabela: table,
+      query: `${params}${order}`,
+      usuario: this.usuario,
+    })
     return parseRows(txt)
   }
 
@@ -541,7 +547,7 @@ export class SupabaseService {
   // Documento OpenAPI da raiz do PostgREST (descreve tabelas/colunas/PKs).
   // Requer que o fluxo do PA trate op=OPENAPI (proxy do GET /rest/v1/).
   async openApi(): Promise<unknown> {
-    const txt = await this.pa({ op: 'OPENAPI' })
+    const txt = await this.pa({ op: 'OPENAPI', usuario: this.usuario })
     return parseJson(txt)
   }
 
