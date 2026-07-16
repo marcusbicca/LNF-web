@@ -22,6 +22,7 @@ import { format, parseLenient } from '../utils/json'
 interface ItemNf {
   id: string
   nfChave: string
+  fornecedor: string
   referencia: string
   codigo: string
   descricao: string
@@ -154,6 +155,7 @@ function carregarDados(dict: Record<string, PedidoItem[]>): CargaResultado {
           cb1Dict.set(key, {
             id: 'nf:' + key,
             nfChave,
+            fornecedor: str(linha, 'Fornecedor'),
             referencia: refNF,
             codigo: str(linha, 'Código'),
             descricao: str(linha, 'Descrição'),
@@ -264,15 +266,20 @@ function convToJson(de: string, para: string, fator: number): FatorEntry {
 }
 
 // Aplica os vínculos no itens.json (espelha AplicarItemNoDict/UpsertItens).
-// Ao gravar uma referência, remove-a de qualquer OUTRO código do mesmo
-// fornecedor (refazer limpo: uma referência mapeia para um único código).
-function aplicarVinculos(base: ItensJson, fornecedor: string, vinculos: Vinculo[]): ItensJson {
+// Agrupa por fornecedor de CADA vínculo (v.nf.fornecedor) — suporta lotes
+// multi-fornecedor, igual ao Registrar do .exe. Ao gravar uma referência,
+// remove-a de qualquer OUTRO código do MESMO fornecedor (refazer limpo: uma
+// referência mapeia para um único código).
+function aplicarVinculos(base: ItensJson, fornecedorDefault: string, vinculos: Vinculo[]): ItensJson {
   const novo = JSON.parse(JSON.stringify(base)) as ItensJson
-  const fkey = acharFornecedorKey(novo, fornecedor) ?? fornecedor
-  if (!novo[fkey]) novo[fkey] = {}
-  const itens = novo[fkey]
 
   for (const v of vinculos) {
+    const forn = (v.nf.fornecedor || fornecedorDefault || '').trim()
+    if (!forn) continue
+    const fkey = acharFornecedorKey(novo, forn) ?? forn
+    if (!novo[fkey]) novo[fkey] = {}
+    const itens = novo[fkey]
+
     const cod = (v.pedido.codigo ?? '').trim()
     // codComoRef → a referência gravada é o próprio código (espelha o .exe).
     const ref = (v.codComoRef ? cod : (v.nf.referencia ?? '')).trim()
@@ -616,10 +623,12 @@ export function Mapeamento() {
     // seleção anterior — era a causa da conversão errada). Convenção do
     // ExecutarService: universal → conversao=Fator; dirA(De=UMB NF) → 1/Fator;
     // dirB(De=UMB pedido) → Fator. qtdSAP = qtdNF/conversao; valor = raw*conversao.
-    // Padrão de=UMB do pedido (dirB). A ordem não importa — Inverter ajusta o fator.
+    // Padrão De=UMB da NF, Para=UMB do pedido — IGUAL ao AtualizarDetalhe do .exe
+    // (com De=UMB NF, um fator digitado à mão é interpretado como 1/f). A ordem
+    // não importa pro resultado final — Sugerir/Inverter ajustam o fator.
     if (mostrarDePara) {
-      setDe(umbPed)
-      setPara(umbNf)
+      setDe(umbNf)
+      setPara(umbPed)
     } else {
       setDe('')
       setPara('')
