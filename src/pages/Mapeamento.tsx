@@ -388,8 +388,14 @@ export function Mapeamento() {
   )
 
   // cb2 filtrado pelos pedidos da NF selecionada + reordenado pela seleção.
+  // Se a NF não consumiu nenhum pedido (caso "Sem pedido" puro, o cenário de
+  // cadastro), NÃO há escopo por pedido — mostra TODOS os itens não consumidos,
+  // senão a lista da direita ficaria vazia justamente quando precisa.
   const cb2 = useMemo(() => {
-    const base = pedidosDaNf ? cb2All.filter(i => pedidosDaNf.has(i.pedido)) : cb2All
+    const base =
+      pedidosDaNf && pedidosDaNf.size > 0
+        ? cb2All.filter(i => pedidosDaNf.has(i.pedido))
+        : cb2All
     return sortCb2(base, cb1Sel)
   }, [cb2All, pedidosDaNf, cb1Sel])
 
@@ -592,8 +598,11 @@ export function Mapeamento() {
     setCb1SelId(it.id)
 
     // CB2 dos mesmos pedidos da NF, já reordenado pela proximidade de preço.
+    // Sem pedidos consumidos (caso "Sem pedido"), usa todos os não consumidos.
     const candidatos = sortCb2(
-      pedidosDaNf ? cb2All.filter(p => pedidosDaNf.has(p.pedido)) : cb2All,
+      pedidosDaNf && pedidosDaNf.size > 0
+        ? cb2All.filter(p => pedidosDaNf.has(p.pedido))
+        : cb2All,
       it,
     )
 

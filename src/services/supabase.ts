@@ -213,6 +213,15 @@ const ORDER_BY: Record<string, string> = {
 // leitura (carregar) e a escrita (gravar).
 const snapshots = new Map<string, Map<string, Row>>()
 
+// ── cache de leitura (padrão Coreon: só rele se a tabela mudou) ──────────────
+// Guarda os dados já buscados por (tabela|query) + a watermark (max updated_at).
+// Ao abrir a página, uma leitura mínima (1 linha) confere a watermark; se não
+// mudou, serve do cache — evita puxar a tabela inteira toda vez. Só vale pra
+// tabelas com updated_at; escrita da própria web invalida o cache da tabela.
+// Módulo-level: sobrevive à navegação entre páginas (mesma sessão do SPA).
+const CACHEAVEIS = new Set(['fornecedores', 'materiais', 'centros', 'usuarios'])
+const cacheLeitura = new Map<string, { wm: string; rows: Row[] }>()
+
 function pkMateriais(r: Row): string {
   return String(r.fornecedor) + '|||' + String(r.codigo)
 }
@@ -298,6 +307,36 @@ export class SupabaseService {
     return parseRows(txt)
   }
 
+  // Leitura com cache por watermark (max updated_at). Faz UMA leitura mínima
+  // (1 linha) pra saber se a tabela mudou; se a watermark bate com o cache,
+  // devolve o cache sem puxar a tabela inteira. Só cacheia tabelas com
+  // updated_at (CACHEAVEIS); as demais caem no getAll normal.
+  private async getAllCached(table: string, params: string): Promise<Row[]> {
+    if (!CACHEAVEIS.has(table)) return this.getAll(table, params)
+
+    const chave = table + '|' + params
+    let wm = ''
+    try {
+      const top = await this.getAll(table, 'select=updated_at&order=updated_at.desc&limit=1')
+      wm = top.length ? String(top[0].updated_at ?? '') : ''
+    } catch {
+      // Sem watermark (rede/coluna): não arrisca cache — lê normal.
+      return this.getAll(table, params)
+    }
+
+    const hit = cacheLeitura.get(chave)
+    if (hit && wm && hit.wm === wm) return hit.rows
+
+    const rows = await this.getAll(table, params)
+    if (wm) cacheLeitura.set(chave, { wm, rows })
+    return rows
+  }
+
+  // Invalida o cache de leitura de uma tabela (após escrita da própria web).
+  private invalidarCache(table: string): void {
+    for (const k of cacheLeitura.keys()) if (k.startsWith(table + '|')) cacheLeitura.delete(k)
+  }
+
   private async upsert(table: string, rows: Row[], onConflict: string | null): Promise<void> {
     if (rows.length === 0) return
     const chunk = 500
@@ -311,16 +350,18 @@ export class SupabaseService {
       if (onConflict) payload.conflito = onConflict
       await this.pa(payload)
     }
+    this.invalidarCache(table)
   }
 
   private async del(table: string, filter: string): Promise<void> {
     await this.pa({ op: 'DELETE', tabela: table, filtro: filter, usuario: this.usuario })
+    this.invalidarCache(table)
   }
 
   // ── leitura: reconstrói o shape JSON legado a partir das tabelas ───────────
   async lerArquivo(path: string): Promise<FileResult> {
     const table = tabelaDoPath(path)
-    const rows = await this.getAll(table, 'select=*')
+    const rows = await this.getAllCached(table, 'select=*')
 
     // Guarda snapshot cru para o diff da escrita (materiais).
     if (table === 'materiais') {
