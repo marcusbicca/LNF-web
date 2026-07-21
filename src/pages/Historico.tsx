@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import { useApp } from '../context/AppContext'
 import { SupabaseService } from '../services/supabase'
 
@@ -11,7 +11,6 @@ import { SupabaseService } from '../services/supabase'
 
 type Row = Record<string, unknown>
 type Modo = 'historico' | 'debug'
-const PAGE = 200
 
 // Colunas escalares do histórico (na ordem). jsonb (nfs/detalhe) vão só no export.
 const COLS: Array<{ campo: string; label: string }> = [
@@ -58,6 +57,10 @@ export function Historico() {
   const [filtroAcao, setFiltroAcao] = useState('')
   const [filtroUsuario, setFiltroUsuario] = useState('')
   const [filtroTipo, setFiltroTipo] = useState('')
+  const [dataInicio, setDataInicio] = useState('')
+  const [dataFim, setDataFim] = useState('')
+  const [limite, setLimite] = useState(200)
+  const [buscou, setBuscou] = useState(false)
   const [expandido, setExpandido] = useState<string | null>(null)
 
   const carregar = useCallback(
@@ -65,19 +68,25 @@ export function Historico() {
       if (!svc) return
       setCarregando(true)
       setErro(null)
+      setBuscou(true)
+      const lim = Math.max(1, Number(limite) || 200)
       try {
+        // Coluna de data por modo (historico=created_at, debug=updated_at).
+        const col = modo === 'historico' ? 'created_at' : 'updated_at'
         const conds: string[] = []
         if (filtroUsuario) conds.push('usuario=eq.' + encodeURIComponent(filtroUsuario))
         if (modo === 'historico' && filtroAcao) conds.push('acao=eq.' + encodeURIComponent(filtroAcao))
         if (modo === 'debug' && filtroTipo) conds.push('tipo=eq.' + encodeURIComponent(filtroTipo))
+        if (dataInicio) conds.push(`${col}=gte.${dataInicio}`)
+        if (dataFim) conds.push(`${col}=lte.${dataFim}T23:59:59`)
         const page = await svc.lerLinhas(modo, {
-          order: modo === 'historico' ? 'created_at.desc' : 'updated_at.desc',
-          limit: PAGE,
+          order: col + '.desc',
+          limit: lim,
           offset: off,
           filtros: conds.length ? conds.join('&') : undefined,
         })
         setRows(prev => (anexar ? [...prev, ...page] : page))
-        setTemMais(page.length === PAGE)
+        setTemMais(page.length === lim)
         setOffset(off + page.length)
       } catch (e) {
         setErro((e as Error).message)
@@ -86,16 +95,10 @@ export function Historico() {
         setCarregando(false)
       }
     },
-    [svc, modo, filtroAcao, filtroUsuario, filtroTipo],
+    [svc, modo, filtroAcao, filtroUsuario, filtroTipo, dataInicio, dataFim, limite],
   )
 
-  // Recarrega ao trocar de modo/filtro; reseta o que é específico do outro modo.
-  useEffect(() => {
-    if (config?.paUrl) {
-      setExpandido(null)
-      void carregar(0, false)
-    }
-  }, [config?.paUrl, carregar])
+  // NÃO carrega ao abrir — a busca só acontece ao clicar "Buscar".
 
   // Opções de filtro derivadas do que já foi carregado.
   const usuarios = useMemo(
@@ -130,6 +133,7 @@ export function Historico() {
     setBusca('')
     setFiltroAcao('')
     setFiltroTipo('')
+    setBuscou(false)
   }
 
   function exportarCsv() {
@@ -180,7 +184,7 @@ export function Historico() {
         <input
           value={busca}
           onChange={e => setBusca(e.target.value)}
-          placeholder="Buscar em tudo..."
+          placeholder="Filtrar carregados..."
           className="flex-1 min-w-40 bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-green-500"
         />
         {modo === 'historico' && (
@@ -217,6 +221,35 @@ export function Historico() {
             <option key={u} value={u}>{u}</option>
           ))}
         </select>
+        <input
+          type="date"
+          value={dataInicio}
+          onChange={e => setDataInicio(e.target.value)}
+          title="Data inicial (opcional)"
+          className="bg-zinc-900 border border-zinc-700 rounded-lg px-2 py-2 text-sm focus:outline-none focus:border-green-500"
+        />
+        <input
+          type="date"
+          value={dataFim}
+          onChange={e => setDataFim(e.target.value)}
+          title="Data final (opcional)"
+          className="bg-zinc-900 border border-zinc-700 rounded-lg px-2 py-2 text-sm focus:outline-none focus:border-green-500"
+        />
+        <input
+          type="number"
+          min={1}
+          value={limite}
+          onChange={e => setLimite(Number(e.target.value))}
+          title="Máximo de linhas (as últimas N do período)"
+          className="w-20 bg-zinc-900 border border-zinc-700 rounded-lg px-2 py-2 text-sm focus:outline-none focus:border-green-500"
+        />
+        <button
+          onClick={() => void carregar(0, false)}
+          disabled={carregando}
+          className="bg-green-700 hover:bg-green-600 disabled:opacity-40 text-white rounded-lg px-4 py-2 text-sm font-medium transition-colors"
+        >
+          Buscar
+        </button>
         {modo === 'historico' && (
           <button
             onClick={exportarCsv}
@@ -267,7 +300,7 @@ export function Historico() {
               {filtradas.length === 0 && !carregando && (
                 <tr>
                   <td colSpan={COLS.length + 1} className="px-3 py-4 text-center text-zinc-500 text-xs">
-                    Nenhum registro.
+                    {buscou ? 'Nenhum registro.' : 'Defina os filtros (data / limite) e clique Buscar.'}
                   </td>
                 </tr>
               )}
@@ -320,7 +353,9 @@ export function Historico() {
             )
           })}
           {filtradas.length === 0 && !carregando && (
-            <div className="px-3 py-4 text-center text-zinc-500 text-xs">Nenhum debug.</div>
+            <div className="px-3 py-4 text-center text-zinc-500 text-xs">
+              {buscou ? 'Nenhum debug.' : 'Defina os filtros e clique Buscar.'}
+            </div>
           )}
         </div>
       )}

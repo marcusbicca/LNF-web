@@ -212,6 +212,34 @@ function carregarDados(dict: Record<string, PedidoItem[]>): CargaResultado {
   }
 }
 
+// Uma requisição está "resolvida" quando TODOS os itens NF "Sem pedido" já têm
+// a referência cadastrada nos materiais atuais (alguém cadastrou por outro meio
+// depois que o caso foi criado). Nesse caso pode ser finalizada automaticamente.
+function casoJaResolvido(
+  payload: CadastroJson | undefined,
+  itensData: ItensJson | null,
+): boolean {
+  if (!itensData || !payload?.PedidosDict) return false
+  let cb1
+  try {
+    cb1 = carregarDados(payload.PedidosDict).cb1
+  } catch {
+    return false
+  }
+  if (cb1.length === 0) return false
+  for (const it of cb1) {
+    const fk = acharFornecedorKey(itensData, it.fornecedor)
+    if (!fk) return false
+    const ref = (it.referencia ?? '').trim().toLowerCase()
+    if (!ref) return false
+    const jaTem = Object.values(itensData[fk]).some(item =>
+      Object.keys(item.referencias ?? {}).some(r => r.toLowerCase() === ref),
+    )
+    if (!jaTem) return false // este item ainda não cadastrado → caso NÃO resolvido
+  }
+  return true
+}
+
 // Reordena CB2: "Sem cadastro" primeiro; depois por proximidade de preço com
 // o item da NF selecionado (espelha o reordenamento do Lv1_SelectionChanged).
 function sortCb2(list: ItemPedido[], ref: ItemNf | null): ItemPedido[] {
@@ -338,6 +366,8 @@ export function Mapeamento() {
   // Casos pendentes vindos da tabela cadastros (fim do colar-JSON).
   const [casos, setCasos] = useState<Array<Record<string, unknown>>>([])
   const [carregandoCasos, setCarregandoCasos] = useState(false)
+  const [verFinalizados, setVerFinalizados] = useState(false)
+  const [notaCasos, setNotaCasos] = useState<string | null>(null)
   const [casoSelNf, setCasoSelNf] = useState<string | null>(null)
 
   // Dados de trabalho
@@ -555,19 +585,44 @@ export function Mapeamento() {
   const carregarCasos = useCallback(async () => {
     if (!svc) return
     setCarregandoCasos(true)
+    setNotaCasos(null)
     try {
       const rows = await svc.lerLinhas('cadastros', {
         order: 'created_at.desc',
-        filtros: 'status=eq.pendente',
+        filtros: verFinalizados ? 'status=eq.finalizado' : 'status=eq.pendente',
         limit: 200,
       })
-      setCasos(rows)
+
+      // Pendentes: antes de mostrar, verifica se algum já foi cadastrado por
+      // outro meio (itens já têm referência nos materiais atuais). Se sim,
+      // finaliza automaticamente e não mostra.
+      if (!verFinalizados && itens) {
+        const restantes: Array<Record<string, unknown>> = []
+        let auto = 0
+        for (const c of rows) {
+          const nf = c.nf_chaves != null ? String(c.nf_chaves) : null
+          if (nf && casoJaResolvido(c.payload as CadastroJson | undefined, itens)) {
+            try {
+              await svc.salvarLinha('cadastros', { nf_chaves: nf, status: 'finalizado' }, 'nf_chaves')
+              auto++
+              continue
+            } catch {
+              /* se falhar, mantém na lista */
+            }
+          }
+          restantes.push(c)
+        }
+        setCasos(restantes)
+        if (auto > 0) setNotaCasos(`${auto} requisição(ões) já cadastrada(s) foram finalizadas automaticamente.`)
+      } else {
+        setCasos(rows)
+      }
     } catch (e) {
       setErroJson((e as Error).message)
     } finally {
       setCarregandoCasos(false)
     }
-  }, [svc])
+  }, [svc, verFinalizados, itens])
 
   useEffect(() => {
     if (config?.paUrl) void carregarCasos()
@@ -579,13 +634,14 @@ export function Mapeamento() {
     setCasoSelNf(caso.nf_chaves != null ? String(caso.nf_chaves) : null)
   }
 
-  async function mudarStatus(novoStatus: 'concluido' | 'descaracterizado') {
+  // Finaliza o caso selecionado (status único: pendente → finalizado).
+  async function finalizar() {
     if (!svc || casoSelNf == null) return
     try {
       // UPSERT na chave de negócio nf_chaves (não a PK 'id', que é identity —
       // enviar id explícito quebra o INSERT do upsert). On conflict → UPDATE status.
-      await svc.salvarLinha('cadastros', { nf_chaves: casoSelNf, status: novoStatus }, 'nf_chaves')
-      setStatusCommit(`✅ Caso marcado como "${novoStatus}".`)
+      await svc.salvarLinha('cadastros', { nf_chaves: casoSelNf, status: 'finalizado' }, 'nf_chaves')
+      setStatusCommit('✅ Caso finalizado.')
       await carregarCasos()
       limpar()
     } catch (e) {
@@ -810,16 +866,39 @@ export function Mapeamento() {
     return (
       <div className="p-4 space-y-3 max-w-2xl mx-auto">
         <div className="flex items-center justify-between">
-          <h2 className="font-semibold">Casos de cadastro pendentes</h2>
-          <button
-            onClick={() => void carregarCasos()}
-            className="text-zinc-400 hover:text-zinc-200 text-sm"
-          >
-            ⟳ Atualizar
-          </button>
+          <h2 className="font-semibold">
+            {verFinalizados ? 'Casos finalizados' : 'Casos de cadastro pendentes'}
+          </h2>
+          <div className="flex items-center gap-2">
+            <div className="inline-flex rounded-lg border border-zinc-700 overflow-hidden text-xs">
+              <button
+                onClick={() => setVerFinalizados(false)}
+                className={`px-2.5 py-1 transition-colors ${
+                  !verFinalizados ? 'bg-green-600 text-white' : 'bg-zinc-900 text-zinc-300 hover:bg-zinc-800'
+                }`}
+              >
+                Pendentes
+              </button>
+              <button
+                onClick={() => setVerFinalizados(true)}
+                className={`px-2.5 py-1 transition-colors ${
+                  verFinalizados ? 'bg-green-600 text-white' : 'bg-zinc-900 text-zinc-300 hover:bg-zinc-800'
+                }`}
+              >
+                Finalizados
+              </button>
+            </div>
+            <button
+              onClick={() => void carregarCasos()}
+              className="text-zinc-400 hover:text-zinc-200 text-sm"
+            >
+              ⟳ Atualizar
+            </button>
+          </div>
         </div>
 
-        {carregandoCasos && <p className="text-zinc-400 text-sm">Carregando casos...</p>}
+        {carregandoCasos && <p className="text-zinc-400 text-sm">Verificando casos...</p>}
+        {notaCasos && <p className="text-amber-400 text-xs">{notaCasos}</p>}
 
         <div className="border border-zinc-800 rounded-lg divide-y divide-zinc-800 max-h-96 overflow-y-auto">
           {casos.map(c => {
@@ -841,7 +920,9 @@ export function Mapeamento() {
             )
           })}
           {!carregandoCasos && casos.length === 0 && (
-            <p className="text-xs text-zinc-500 p-3">Nenhum caso pendente.</p>
+            <p className="text-xs text-zinc-500 p-3">
+              {verFinalizados ? 'Nenhum caso finalizado.' : 'Nenhum caso pendente.'}
+            </p>
           )}
         </div>
 
@@ -905,22 +986,13 @@ export function Mapeamento() {
         </div>
         <div className="flex items-center gap-2 shrink-0">
           {casoSelNf != null && (
-            <>
-              <button
-                onClick={() => void mudarStatus('concluido')}
-                className="text-xs bg-green-800 hover:bg-green-700 text-green-100 px-2.5 py-1 rounded transition-colors"
-                title="Marca o caso como concluído (some do banco em 3 dias)"
-              >
-                ✓ Concluído
-              </button>
-              <button
-                onClick={() => void mudarStatus('descaracterizado')}
-                className="text-xs bg-zinc-800 hover:bg-zinc-700 text-zinc-300 px-2.5 py-1 rounded transition-colors"
-                title="Marca como descaracterizado (não era caso de cadastro)"
-              >
-                Descaracterizar
-              </button>
-            </>
+            <button
+              onClick={() => void finalizar()}
+              className="text-xs bg-green-800 hover:bg-green-700 text-green-100 px-2.5 py-1 rounded transition-colors"
+              title="Finaliza o caso (some do banco em 3 dias)"
+            >
+              ✓ Finalizar
+            </button>
           )}
           <button onClick={limpar} className="text-zinc-500 hover:text-zinc-300 text-sm">
             ✕ Limpar
