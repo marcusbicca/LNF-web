@@ -72,6 +72,22 @@ function asList(v: unknown): string[] {
   return Array.isArray(v) ? v.map(x => String(x)) : []
 }
 
+// Só dígitos, 14 posições — mesma normalização do Coreon (FornecedorService),
+// pra que o CNPJ gravado case com o lookup por CNPJ.
+function normalizarCnpj(v: string): string | null {
+  const d = (v ?? '').replace(/\D/g, '')
+  if (!d) return null
+  return d.length < 14 ? d.padStart(14, '0') : d
+}
+
+// Acrescenta um CNPJ à lista sem duplicar (compara normalizado).
+function comCnpj(lista: string[], cnpj: string): string[] {
+  const norm = normalizarCnpj(cnpj)
+  if (!norm) return lista
+  if (lista.some(x => normalizarCnpj(x) === norm)) return lista
+  return [...lista, norm]
+}
+
 // Limpa o objeto do fornecedor antes de gravar: remove campos vazios/false/0
 // e arrays de termos vazios (espelha o forn.json, que omite campos opcionais).
 // Campos desconhecidos com valor "truthy" são preservados.
@@ -373,12 +389,30 @@ export function Cadastros() {
     setSolicCnpj(null)
   }
 
-  // "Cadastrar" a partir de uma solicitação: pré-preenche um fornecedor novo
-  // (nome como chave, CNPJ na lista) e marca a solicitação p/ concluir no save.
+  // "Cadastrar" a partir de uma solicitação: pré-preenche o nome como chave e
+  // o CNPJ na lista.
+  //
+  // Se o nome JÁ existe, isto é COMPLEMENTO e não cadastro novo: carrega os
+  // dados atuais do fornecedor e só ACRESCENTA o CNPJ. Sem isso o save gravaria
+  // a linha com apenas esse CNPJ e o resto em branco — apagando as demais
+  // filiais e toda a configuração de processamento do fornecedor.
   function cadastrarDeSolic(sol: Record<string, unknown>) {
     const cnpj = String(sol.cnpj ?? '')
+    const nome = String(sol.nome ?? '').trim()
+
+    const existente = entries.find(e => e.key.trim().toLowerCase() === nome.toLowerCase())
+    if (existente) {
+      const data = JSON.parse(JSON.stringify(existente.data)) as Data
+      data.cnpjs = comCnpj(asList(data.cnpjs), cnpj)
+      setSelKey(existente.key)
+      setForm({ key: existente.key, data })
+      setSolicCnpj(cnpj || null)
+      setStatus(`ℹ️ "${existente.key}" já é cadastrado — CNPJ somado aos existentes. Revise e salve.`)
+      return
+    }
+
     setSelKey(null)
-    setForm({ key: String(sol.nome ?? '').trim(), data: { cnpjs: cnpj ? [cnpj] : [] } })
+    setForm({ key: nome, data: { cnpjs: comCnpj([], cnpj) } })
     setSolicCnpj(cnpj || null)
     setStatus('ℹ️ Revise e salve para concluir o cadastro.')
   }
@@ -401,16 +435,35 @@ export function Cadastros() {
 
   // Recalcula a lista local após um save (com possível rename), espelhando o
   // que foi gravado por linha no Supabase.
-  function aplicarLocal(key: string): Entry[] {
+  function aplicarLocal(key: string, data: Data = form.data): Entry[] {
     if (selKey && entries.some(e => e.key === selKey)) {
-      let next = entries.map(e => (e.key === selKey ? { key, data: form.data } : e))
+      let next = entries.map(e => (e.key === selKey ? { key, data } : e))
       if (key !== selKey) next = next.filter((e, i) => !(e.key === key && entries[i]?.key !== selKey))
       return next
     }
     if (entries.some(e => e.key === key)) {
-      return entries.map(e => (e.key === key ? { key, data: form.data } : e))
+      return entries.map(e => (e.key === key ? { key, data } : e))
     }
-    return [...entries, { key, data: form.data }]
+    return [...entries, { key, data }]
+  }
+
+  // Rede de segurança pro cadastro de fornecedor: o nome digitado já existe mas
+  // NÃO é o registro aberto na tela (veio de "novo" ou de uma solicitação). O
+  // save é por linha inteira, então gravar o form como está apagaria os CNPJs
+  // das outras filiais e a configuração. Aqui o form é fundido SOBRE o cadastro
+  // atual e os CNPJs entram somados — nome repetido complementa, não substitui.
+  function fundirSeExistente(key: string, data: Data): Data {
+    if (entId !== 'fornecedores') return data
+    const existente = entries.find(e => e.key.trim().toLowerCase() === key.toLowerCase())
+    if (!existente || existente.key === selKey) return data
+
+    const base = JSON.parse(JSON.stringify(existente.data)) as Data
+    for (const [k, v] of Object.entries(data)) base[k] = v
+
+    let uniao = asList(existente.data.cnpjs)
+    for (const c of asList(data.cnpjs)) uniao = comCnpj(uniao, c)
+    base.cnpjs = uniao
+    return base
   }
 
   async function salvar() {
@@ -424,8 +477,9 @@ export function Cadastros() {
     setStatus(null)
     try {
       const oldKey = selKey && selKey !== key ? selKey : undefined
-      await ent.save(svc, key, form.data, oldKey)
-      setEntries(aplicarLocal(key))
+      const dados = fundirSeExistente(key, form.data)
+      await ent.save(svc, key, dados, oldKey)
+      setEntries(aplicarLocal(key, dados))
       setSelKey(key)
       setStatus(`✅ "${key}" salvo com sucesso`)
 
