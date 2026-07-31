@@ -180,6 +180,9 @@ const ENTIDADES: EntityConfig[] = [
       { path: 'genericLoteForn', label: 'Generic Lote Forn', type: 'boolean' },
       { path: 'peinh1000PorDecimais', label: 'Peinh 1000 por Decimais', type: 'boolean' },
       { path: 'forcarPeinh1000', label: 'Forçar Peinh 1000', type: 'boolean' },
+      // Preço da NF já vem na unidade convertida: o Coreon deixa de multiplicar
+      // o preço pela conversão (a quantidade continua convertida normalmente).
+      { path: 'precoNfJaConvertido', label: 'Preço NF já convertido', type: 'boolean' },
       { path: 'termos.lote', label: 'Termo · Lote', type: 'list' },
       { path: 'termos.fimLote', label: 'Termo · Fim Lote', type: 'list' },
       { path: 'termos.validade', label: 'Termo · Validade', type: 'list' },
