@@ -35,11 +35,11 @@ export interface ImportOpts {
 export const IMPORT_DEFAULTS: ImportOpts = {
   owner: 'marcusbicca',
   repo: 'LNF-files',
-  fornPath: 'forn.json',
-  itensPath: 'itens.json',
-  centrosPath: 'centros.json',
-  usuariosPath: 'usersList.json',
-  termosPath: 'termos_globais.json',
+  fornPath: 'json/forn.json',
+  itensPath: 'json/itens.json',
+  centrosPath: 'json/centros.json',
+  usuariosPath: 'json/usersList.json',
+  termosPath: 'json/termos_globais.json',
 }
 
 export interface ImportStepResult {
