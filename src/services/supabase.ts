@@ -56,6 +56,32 @@ function obj(v: unknown): Row {
   return v && typeof v === 'object' && !Array.isArray(v) ? (v as Row) : {}
 }
 
+// Só dígitos, 14 posições — mesma normalização do Coreon (FornecedorService),
+// pra que o CNPJ gravado case com o lookup por CNPJ.
+function cnpjNorm(v: unknown): string | null {
+  const d = String(v ?? '').replace(/\D/g, '')
+  if (!d) return null
+  return d.length < 14 ? d.padStart(14, '0') : d
+}
+
+// Raízes = 8 primeiros dígitos dos CNPJs, unidas às informadas explicitamente.
+// É o que o Coreon usa como fallback quando a filial exata não está cadastrada,
+// então derivar aqui evita cadastro com CNPJ e sem raiz (fornecedor que "some"
+// pra filiais novas). As informadas são preservadas: existe raiz cadastrada sem
+// CNPJ de filial correspondente.
+function raizes(informadas: unknown, cnpjs: unknown): string[] {
+  const out: string[] = []
+  const add = (r: string) => {
+    if (r.length === 8 && !out.includes(r)) out.push(r)
+  }
+  for (const v of arr(informadas)) add(String(v).replace(/\D/g, '').slice(0, 8))
+  for (const v of arr(cnpjs)) {
+    const n = cnpjNorm(v)
+    if (n) add(n.slice(0, 8))
+  }
+  return out
+}
+
 // Serialização canônica (chaves ordenadas) para diff estável de linhas.
 function canon(v: unknown): string {
   if (v === null || v === undefined) return 'null'
@@ -72,10 +98,13 @@ function canon(v: unknown): string {
 // conjunto de chaves — por isso os builders SEMPRE emitem todas as colunas.
 
 export function buildFornRow(nome: string, o: Row): Row {
+  const cnpjs = arr(o.cnpjs)
+    .map(cnpjNorm)
+    .filter((c): c is string => c !== null)
   return {
     nome,
-    raiz_cnpjs: arr(o.raizCNPJs),
-    cnpjs: arr(o.cnpjs),
+    raiz_cnpjs: raizes(o.raizCNPJs, cnpjs),   // derivadas dos CNPJs, sempre
+    cnpjs,
     lifnrs: arr(o.lifnrs),
     ordem: numOr0(o.ordem),
     info_xprod: boolp(o.infoXprod),
@@ -87,6 +116,7 @@ export function buildFornRow(nome: string, o: Row): Row {
     generic_lote_forn: boolp(o.genericLoteForn),
     peinh1000_por_decimais: boolp(o.peinh1000PorDecimais),
     forcar_peinh1000: boolp(o.forcarPeinh1000),
+    preco_nf_ja_convertido: boolp(o.precoNfJaConvertido),
     buscar_ref_no_xprod: boolp(o.buscarRefNoXprod),
     skip_refs: arr(o.skipRefs),
     termos: obj(o.termos),
@@ -142,6 +172,7 @@ function fornRowToLegacy(r: Row): Row {
     genericLoteForn: boolp(r.generic_lote_forn),
     peinh1000PorDecimais: boolp(r.peinh1000_por_decimais),
     forcarPeinh1000: boolp(r.forcar_peinh1000),
+    precoNfJaConvertido: boolp(r.preco_nf_ja_convertido),
     buscarRefNoXprod: boolp(r.buscar_ref_no_xprod),
     skipRefs: arr(r.skip_refs),
     termos: obj(r.termos),

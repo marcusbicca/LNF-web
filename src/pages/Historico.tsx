@@ -57,6 +57,10 @@ export function Historico() {
   const [filtroAcao, setFiltroAcao] = useState('')
   const [filtroUsuario, setFiltroUsuario] = useState('')
   const [filtroTipo, setFiltroTipo] = useState('')
+  const [filtroMetodo, setFiltroMetodo] = useState('')   // detalhe->>metodo (busca de XML)
+  const [filtroMaquina, setFiltroMaquina] = useState('')
+  const [filtroSucesso, setFiltroSucesso] = useState('') // '' | 'true' | 'false'
+  const [filtroCodigo, setFiltroCodigo] = useState('')
   const [dataInicio, setDataInicio] = useState('')
   const [dataFim, setDataFim] = useState('')
   const [limite, setLimite] = useState(200)
@@ -75,7 +79,14 @@ export function Historico() {
         const col = modo === 'historico' ? 'created_at' : 'updated_at'
         const conds: string[] = []
         if (filtroUsuario) conds.push('usuario=eq.' + encodeURIComponent(filtroUsuario))
-        if (modo === 'historico' && filtroAcao) conds.push('acao=eq.' + encodeURIComponent(filtroAcao))
+        if (modo === 'historico') {
+          if (filtroAcao) conds.push('acao=eq.' + encodeURIComponent(filtroAcao))
+          // metodo vive no jsonb detalhe (caminho | meudanfe | sap) — filtro server-side.
+          if (filtroMetodo) conds.push('detalhe->>metodo=eq.' + encodeURIComponent(filtroMetodo))
+          if (filtroMaquina) conds.push('maquina=eq.' + encodeURIComponent(filtroMaquina))
+          if (filtroCodigo) conds.push('codigo=eq.' + encodeURIComponent(filtroCodigo))
+          if (filtroSucesso) conds.push('sucesso=is.' + filtroSucesso)
+        }
         if (modo === 'debug' && filtroTipo) conds.push('tipo=eq.' + encodeURIComponent(filtroTipo))
         if (dataInicio) conds.push(`${col}=gte.${dataInicio}`)
         if (dataFim) conds.push(`${col}=lte.${dataFim}T23:59:59`)
@@ -95,7 +106,8 @@ export function Historico() {
         setCarregando(false)
       }
     },
-    [svc, modo, filtroAcao, filtroUsuario, filtroTipo, dataInicio, dataFim, limite],
+    [svc, modo, filtroAcao, filtroUsuario, filtroTipo, filtroMetodo, filtroMaquina,
+     filtroSucesso, filtroCodigo, dataInicio, dataFim, limite],
   )
 
   // NÃO carrega ao abrir — a busca só acontece ao clicar "Buscar".
@@ -113,6 +125,25 @@ export function Historico() {
     () => [...new Set(rows.map(r => String(r.tipo ?? '')).filter(Boolean))].sort(),
     [rows],
   )
+  const maquinas = useMemo(
+    () => [...new Set(rows.map(r => String(r.maquina ?? '')).filter(Boolean))].sort(),
+    [rows],
+  )
+  const codigos = useMemo(
+    () => [...new Set(rows.map(r => String(r.codigo ?? '')).filter(Boolean))].sort(),
+    [rows],
+  )
+  // Métodos de busca de XML (detalhe.metodo). Começa com os conhecidos e
+  // acrescenta o que aparecer nas linhas carregadas.
+  const metodos = useMemo(() => {
+    const s = new Set<string>(['caminho', 'meudanfe', 'sap'])
+    for (const r of rows) {
+      const d = r.detalhe as Record<string, unknown> | null
+      const m = d && typeof d === 'object' ? d.metodo : null
+      if (m) s.add(String(m))
+    }
+    return [...s].sort()
+  }, [rows])
 
   // Busca geral (client-side) sobre todos os valores da linha.
   const filtradas = useMemo(() => {
@@ -133,16 +164,38 @@ export function Historico() {
     setBusca('')
     setFiltroAcao('')
     setFiltroTipo('')
+    setFiltroMetodo('')
+    setFiltroMaquina('')
+    setFiltroSucesso('')
+    setFiltroCodigo('')
     setBuscou(false)
   }
 
+  function limparFiltros() {
+    setBusca('')
+    setFiltroAcao('')
+    setFiltroUsuario('')
+    setFiltroTipo('')
+    setFiltroMetodo('')
+    setFiltroMaquina('')
+    setFiltroSucesso('')
+    setFiltroCodigo('')
+    setDataInicio('')
+    setDataFim('')
+  }
+
   function exportarCsv() {
-    const cabec = [...COLS.map(c => c.label), 'NFs', 'Detalhe']
-    const linhas = filtradas.map(r => [
-      ...COLS.map(c => csvEscape(fmt(c.campo, r[c.campo]))),
-      csvEscape(JSON.stringify(r.nfs ?? [])),
-      csvEscape(JSON.stringify(r.detalhe ?? {})),
-    ])
+    const cabec = [...COLS.map(c => c.label), 'Método', 'NFs', 'Detalhe']
+    const linhas = filtradas.map(r => {
+      const det = (r.detalhe as Record<string, unknown> | null) ?? null
+      const metodo = det && typeof det === 'object' ? String(det.metodo ?? '') : ''
+      return [
+        ...COLS.map(c => csvEscape(fmt(c.campo, r[c.campo]))),
+        csvEscape(metodo),
+        csvEscape(JSON.stringify(r.nfs ?? [])),
+        csvEscape(JSON.stringify(r.detalhe ?? {})),
+      ]
+    })
     const csv = [cabec.join(','), ...linhas.map(l => l.join(','))].join('\n')
     baixar(new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' }), `historico-${hoje()}.csv`)
   }
@@ -199,6 +252,54 @@ export function Historico() {
             ))}
           </select>
         )}
+        {modo === 'historico' && (
+          <select
+            value={filtroMetodo}
+            onChange={e => setFiltroMetodo(e.target.value)}
+            title="Método de busca do XML (registrado em detalhe.metodo)"
+            className="bg-zinc-900 border border-zinc-700 rounded-lg px-2 py-2 text-sm focus:outline-none focus:border-green-500"
+          >
+            <option value="">Método: todos</option>
+            {metodos.map(m => (
+              <option key={m} value={m}>{m}</option>
+            ))}
+          </select>
+        )}
+        {modo === 'historico' && (
+          <select
+            value={filtroSucesso}
+            onChange={e => setFiltroSucesso(e.target.value)}
+            className="bg-zinc-900 border border-zinc-700 rounded-lg px-2 py-2 text-sm focus:outline-none focus:border-green-500"
+          >
+            <option value="">Status: todos</option>
+            <option value="true">✓ Sucesso</option>
+            <option value="false">✗ Erro</option>
+          </select>
+        )}
+        {modo === 'historico' && (
+          <select
+            value={filtroCodigo}
+            onChange={e => setFiltroCodigo(e.target.value)}
+            className="bg-zinc-900 border border-zinc-700 rounded-lg px-2 py-2 text-sm focus:outline-none focus:border-green-500"
+          >
+            <option value="">Código: todos</option>
+            {codigos.map(c => (
+              <option key={c} value={c}>{c}</option>
+            ))}
+          </select>
+        )}
+        {modo === 'historico' && (
+          <select
+            value={filtroMaquina}
+            onChange={e => setFiltroMaquina(e.target.value)}
+            className="bg-zinc-900 border border-zinc-700 rounded-lg px-2 py-2 text-sm focus:outline-none focus:border-green-500"
+          >
+            <option value="">Máquina: todas</option>
+            {maquinas.map(m => (
+              <option key={m} value={m}>{m}</option>
+            ))}
+          </select>
+        )}
         {modo === 'debug' && (
           <select
             value={filtroTipo}
@@ -250,6 +351,12 @@ export function Historico() {
         >
           Buscar
         </button>
+        <button
+          onClick={limparFiltros}
+          className="bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-300 rounded-lg px-3 py-2 text-sm transition-colors"
+        >
+          Limpar
+        </button>
         {modo === 'historico' && (
           <button
             onClick={exportarCsv}
@@ -274,12 +381,15 @@ export function Historico() {
                     {c.label}
                   </th>
                 ))}
+                <th className="text-left font-medium px-2.5 py-2 whitespace-nowrap">Método</th>
                 <th className="text-left font-medium px-2.5 py-2">NFs</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-zinc-800">
               {filtradas.map((r, i) => {
                 const nfs = Array.isArray(r.nfs) ? (r.nfs as unknown[]) : []
+                const det = (r.detalhe as Record<string, unknown> | null) ?? null
+                const metodo = det && typeof det === 'object' ? String(det.metodo ?? '') : ''
                 return (
                   <tr key={i} className="hover:bg-zinc-800/40">
                     {COLS.map(c => (
@@ -293,13 +403,18 @@ export function Historico() {
                         {fmt(c.campo, r[c.campo])}
                       </td>
                     ))}
+                    <td className="px-2.5 py-1.5 whitespace-nowrap">
+                      {metodo && (
+                        <span className="text-xs px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-400">{metodo}</span>
+                      )}
+                    </td>
                     <td className="px-2.5 py-1.5 text-zinc-500 whitespace-nowrap">{nfs.length}</td>
                   </tr>
                 )
               })}
               {filtradas.length === 0 && !carregando && (
                 <tr>
-                  <td colSpan={COLS.length + 1} className="px-3 py-4 text-center text-zinc-500 text-xs">
+                  <td colSpan={COLS.length + 2} className="px-3 py-4 text-center text-zinc-500 text-xs">
                     {buscou ? 'Nenhum registro.' : 'Defina os filtros (data / limite) e clique Buscar.'}
                   </td>
                 </tr>
