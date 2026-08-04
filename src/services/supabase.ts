@@ -553,7 +553,8 @@ export class SupabaseService {
   }
 
   // Rename preservando os materiais: cria o novo nome, recria os materiais sob
-  // ele e só então apaga o antigo (cascade limpa os materiais antigos).
+  // ele, corrige as referências em centros e só então apaga o antigo (cascade
+  // limpa os materiais antigos).
   private async renomearFornecedor(antigo: string, novo: string, data: Row): Promise<void> {
     await this.upsert('fornecedores', [buildFornRow(novo, data)], 'nome')
     const mats = await this.getAll(
@@ -566,7 +567,26 @@ export class SupabaseService {
       )
       await this.upsert('materiais', rows, 'fornecedor,codigo')
     }
+    await this.renomearFornEmCentros(antigo, novo)
     await this.removerFornecedor(antigo)
+  }
+
+  // centros.forn_overrides é um JSONB com o NOME do fornecedor como chave. Não
+  // há FK ali, então nenhum cascade alcança: sem isto, renomear deixava o
+  // override preso ao nome antigo e ele parava de valer, calado.
+  // O Coreon já fazia (FornCadastroService.RenomearFornEmCentros) — aqui faltava.
+  private async renomearFornEmCentros(antigo: string, novo: string): Promise<void> {
+    const centros = await this.getAll('centros', 'select=centro,forn_overrides')
+    const rows: Row[] = []
+    for (const c of centros) {
+      const ov = c.forn_overrides as Record<string, unknown> | null | undefined
+      if (!ov || !Object.prototype.hasOwnProperty.call(ov, antigo)) continue
+      const novoOv = { ...ov }
+      novoOv[novo] = novoOv[antigo]
+      delete novoOv[antigo]
+      rows.push({ centro: c.centro, forn_overrides: novoOv })
+    }
+    if (rows.length > 0) await this.upsert('centros', rows, 'centro')
   }
 
   // ── cadastros por entidade (usuários) ──────────────────────────────────────
