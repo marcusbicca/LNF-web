@@ -25,7 +25,7 @@
 // fluxo, que por sua vez valida o usuário e executa a chamada REST no Supabase.
 //
 // Contrato do fluxo (idêntico ao lado C#): recebe um JSON
-//   { op:"SELECT"|"UPSERT"|"DELETE"|"OPENAPI", tabela, query|linhas|conflito|filtro, usuario }
+//   { op:"SELECT"|"UPDATE"|"UPSERT"|"DELETE"|"OPENAPI", tabela, query|linhas|conflito|filtro, usuario }
 // e devolve o corpo da API do Supabase (para SELECT, o array de linhas).
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -389,6 +389,22 @@ export class SupabaseService {
     this.invalidarCache(table)
   }
 
+  // UPDATE (PATCH) das linhas que casam com o filtro. Diferente do UPSERT: o
+  // UPSERT cria uma linha nova quando a chave muda, o UPDATE MOVE a existente —
+  // e é isso que dispara o "on update cascade" das FKs, levando os filhos junto
+  // numa transação só. Exige o ramo "UPDATE" no fluxo do Power Automate.
+  private async update(table: string, filter: string, valores: Row): Promise<void> {
+    if (!filter) throw new Error('UPDATE sem filtro atingiria a tabela inteira.')
+    await this.pa({
+      op: 'UPDATE',
+      tabela: table,
+      linhas: [valores],
+      filtro: filter,
+      usuario: this.usuario,
+    })
+    this.invalidarCache(table)
+  }
+
   // ── leitura: reconstrói o shape JSON legado a partir das tabelas ───────────
   async lerArquivo(path: string): Promise<FileResult> {
     const table = tabelaDoPath(path)
@@ -552,10 +568,39 @@ export class SupabaseService {
     await this.del('fornecedores', `nome=eq.${encodeURIComponent(nome)}`)
   }
 
-  // Rename preservando os materiais: cria o novo nome, recria os materiais sob
-  // ele, corrige as referências em centros e só então apaga o antigo (cascade
-  // limpa os materiais antigos).
+  // ── renomear fornecedor ────────────────────────────────────────────────────
+  //
+  // CAMINHO BOM: um UPDATE na chave. A FK de materiais é "on update cascade",
+  // então o Postgres move os materiais junto, na MESMA transação — nada é
+  // copiado e não existe instante em que os dois nomes coexistem.
+  //
+  // CAMINHO ANTIGO (plano B): cria o novo, copia os materiais, apaga o antigo.
+  // Funciona, mas são três operações soltas: rede caindo no meio deixa DOIS
+  // fornecedores, o novo sem materiais e o antigo intacto.
+  //
+  // O plano B fica porque o UPDATE depende de duas coisas fora deste código: o
+  // ramo "UPDATE" no fluxo do Power Automate e o "on update cascade" na FK.
+  // Faltando qualquer uma, o UPDATE falha — e falhar sem renomear seria pior
+  // que renomear pelo caminho antigo.
+  //
+  // forn_overrides fica de fora do cascade nos dois caminhos: é chave de JSONB,
+  // sem FK. Por isso a correção dos centros é sempre um passo à parte.
   private async renomearFornecedor(antigo: string, novo: string, data: Row): Promise<void> {
+    try {
+      await this.update(
+        'fornecedores',
+        `nome=eq.${encodeURIComponent(antigo)}`,
+        { nome: novo },
+      )
+      // Só depois de o nome ter migrado é que gravamos o resto da edição —
+      // assim um erro aqui deixa o fornecedor renomeado e íntegro.
+      await this.upsert('fornecedores', [buildFornRow(novo, data)], 'nome')
+      await this.renomearFornEmCentros(antigo, novo)
+      return
+    } catch (e) {
+      console.warn('renomearFornecedor: UPDATE atômico indisponível, usando copiar-e-apagar', e)
+    }
+
     await this.upsert('fornecedores', [buildFornRow(novo, data)], 'nome')
     const mats = await this.getAll(
       'materiais',
