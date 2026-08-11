@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react'
+import { useState, useSyncExternalStore, type ReactNode } from 'react'
 import { useApp } from '../context/AppContext'
 import type { Config } from '../types'
 import { SupabaseService } from '../services/supabase'
@@ -8,6 +8,14 @@ import {
   IMPORT_DEFAULTS,
   type ImportStepResult,
 } from '../services/importLnfFiles'
+import {
+  lerChamadasPa,
+  limparChamadasPa,
+  observarPa,
+  relatorioPa,
+  resumir,
+  type PaCall,
+} from '../services/paLog'
 
 export function Configuracoes() {
   const { config, salvarConfig, carregarItens, carregandoItens, erroItens, itens } = useApp()
@@ -86,7 +94,150 @@ export function Configuracoes() {
         <p>• O campo "Usuário" vai no pedido de escrita; o fluxo decide quem pode gravar.</p>
       </div>
 
+      <DiagnosticoPa />
+
       <ImportarLnfFiles paUrl={form.paUrl} usuario={form.usuario} />
+    </div>
+  )
+}
+
+// ── Diagnóstico do Power Automate ────────────────────────────────────────────
+// Mostra o par pedido/resposta de cada chamada ao fluxo.
+//
+// Existe porque com "Entradas e Saídas Seguras" ligada na ação do fluxo, o
+// histórico de execução do Power Automate marca a run como bem-sucedida e
+// esconde exatamente os dois corpos. Deste lado nada é escondido.
+//
+// A URL do fluxo não aparece aqui de propósito: ela carrega a chave de
+// invocação, e este painel foi feito pra ser copiado e colado.
+function DiagnosticoPa() {
+  const [aberto, setAberto] = useState(false)
+  const [expandida, setExpandida] = useState<number | null>(null)
+  const [copiado, setCopiado] = useState(false)
+
+  const chamadas = useSyncExternalStore(observarPa, lerChamadasPa)
+
+  async function copiar() {
+    try {
+      await navigator.clipboard.writeText(relatorioPa())
+      setCopiado(true)
+      setTimeout(() => setCopiado(false), 2000)
+    } catch {
+      /* clipboard bloqueada: o texto continua visível na tela */
+    }
+  }
+
+  return (
+    <div className="bg-zinc-900 border border-zinc-700 rounded-lg overflow-hidden">
+      <button
+        onClick={() => setAberto(v => !v)}
+        className="w-full flex items-center justify-between px-3 py-2.5 text-sm text-zinc-300 hover:bg-zinc-800/60 transition-colors"
+      >
+        <span className="font-medium">
+          🔍 Diagnóstico do Power Automate
+          {chamadas.length > 0 && (
+            <span className="ml-2 text-xs text-zinc-500">({chamadas.length})</span>
+          )}
+        </span>
+        <span className="text-zinc-500">{aberto ? '▲' : '▼'}</span>
+      </button>
+
+      {aberto && (
+        <div className="p-3 border-t border-zinc-800 space-y-3">
+          <p className="text-xs text-zinc-500">
+            Cada chamada ao fluxo, com o corpo enviado e o corpo recebido — o que a opção
+            "Entradas e Saídas Seguras" esconde do histórico do Power Automate. Fica só nesta
+            aba e some ao recarregar a página. A URL do fluxo não é registrada.
+          </p>
+
+          <div className="flex gap-2">
+            <button
+              onClick={() => void copiar()}
+              disabled={chamadas.length === 0}
+              className="flex-1 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-40 text-white text-sm py-2 rounded-lg transition-colors"
+            >
+              {copiado ? '✅ Copiado' : 'Copiar tudo'}
+            </button>
+            <button
+              onClick={limparChamadasPa}
+              disabled={chamadas.length === 0}
+              className="flex-1 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-40 text-white text-sm py-2 rounded-lg transition-colors"
+            >
+              Limpar
+            </button>
+          </div>
+
+          {chamadas.length === 0 ? (
+            <p className="text-xs text-zinc-600 text-center py-3">
+              Nenhuma chamada ainda nesta sessão.
+            </p>
+          ) : (
+            <div className="border border-zinc-800 rounded-lg divide-y divide-zinc-800">
+              {chamadas.map(c => (
+                <LinhaPa
+                  key={c.id}
+                  chamada={c}
+                  aberta={expandida === c.id}
+                  onToggle={() => setExpandida(v => (v === c.id ? null : c.id))}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function LinhaPa({
+  chamada,
+  aberta,
+  onToggle,
+}: {
+  chamada: PaCall
+  aberta: boolean
+  onToggle: () => void
+}) {
+  const c = chamada
+  // HTTP 200 com erro no corpo é o caso que importa: o status engana, o corpo não.
+  const cor = c.erro ? 'text-red-300' : c.status >= 200 && c.status < 300 ? 'text-zinc-300' : 'text-amber-300'
+
+  return (
+    <div>
+      <button
+        onClick={onToggle}
+        className="w-full flex items-center justify-between gap-2 px-3 py-2 text-sm hover:bg-zinc-800/60 transition-colors text-left"
+      >
+        <span className={`font-mono ${cor} truncate`}>
+          {c.erro ? '❌' : '✅'} {c.op} {c.tabela}
+        </span>
+        <span className="text-xs text-zinc-500 font-mono shrink-0">
+          {c.status || '—'} · {c.ms}ms · {c.quando.toLocaleTimeString()}
+        </span>
+      </button>
+
+      {aberta && (
+        <div className="px-3 pb-3 space-y-2">
+          {c.erro && (
+            <div className="bg-red-950 border border-red-800 rounded p-2 text-xs text-red-300 whitespace-pre-wrap">
+              {c.erro}
+            </div>
+          )}
+          <Bloco titulo="Enviado" texto={c.pedido} />
+          <Bloco titulo="Recebido" texto={c.resposta || '(corpo vazio)'} />
+        </div>
+      )}
+    </div>
+  )
+}
+
+function Bloco({ titulo, texto }: { titulo: string; texto: string }) {
+  return (
+    <div>
+      <p className="text-xs text-zinc-500 mb-1">{titulo}</p>
+      <pre className="bg-zinc-950 border border-zinc-800 rounded p-2 text-xs text-zinc-400 overflow-x-auto max-h-60 whitespace-pre-wrap break-all">
+        {resumir(texto)}
+      </pre>
     </div>
   )
 }

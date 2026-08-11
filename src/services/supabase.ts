@@ -25,9 +25,11 @@
 // fluxo, que por sua vez valida o usuário e executa a chamada REST no Supabase.
 //
 // Contrato do fluxo (idêntico ao lado C#): recebe um JSON
-//   { op:"SELECT"|"UPSERT"|"DELETE"|"OPENAPI", tabela, query|linhas|conflito|filtro, usuario }
+//   { op:"SELECT"|"UPDATE"|"UPSERT"|"DELETE"|"OPENAPI", tabela, query|linhas|conflito|filtro, usuario }
 // e devolve o corpo da API do Supabase (para SELECT, o array de linhas).
 // ─────────────────────────────────────────────────────────────────────────────
+
+import { registrarChamadaPa, marcarErroPa } from './paLog'
 
 export interface FileResult {
   data: unknown
@@ -306,20 +308,54 @@ export class SupabaseService {
 
   // Transporte único: POST para o fluxo do PA (que segura o secret), que executa
   // a operação no Supabase e devolve o corpo da API. Mesmo contrato do C#.
+  //
+  // Toda chamada entra no paLog. É o único lugar onde dá pra ver o par
+  // pedido/resposta quando o fluxo está com "Entradas e Saídas Seguras" ligada
+  // — nesse modo o histórico do Power Automate marca a run como bem-sucedida e
+  // esconde justamente os dois corpos.
   private async pa(payload: Record<string, unknown>): Promise<string> {
     this.assertConfigurado()
+    const corpo = JSON.stringify(payload)
+    const t0 = Date.now()
+
     let res: Response
     try {
       res = await fetch(this.paUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
+        body: corpo,
       })
     } catch (e) {
-      throw new Error('Falha de conexão com o Power Automate: ' + (e as Error).message)
+      const msg = 'Falha de conexão com o Power Automate: ' + (e as Error).message
+      registrarChamadaPa({
+        op: String(payload.op ?? '?'),
+        tabela: String(payload.tabela ?? ''),
+        pedido: corpo,
+        status: 0,
+        resposta: '',
+        ms: Date.now() - t0,
+        erro: msg,
+      })
+      throw new Error(msg)
     }
+
     const txt = await res.text()
-    if (!res.ok) throw new Error(`Power Automate ${res.status}: ${txt || res.statusText}`)
+    const call = registrarChamadaPa({
+      op: String(payload.op ?? '?'),
+      tabela: String(payload.tabela ?? ''),
+      pedido: corpo,
+      status: res.status,
+      resposta: txt,
+      ms: Date.now() - t0,
+    })
+
+    if (!res.ok) {
+      // O fluxo devolve o httpStatus do Supabase, então isto já é a recusa do
+      // banco — não há um "200 que na verdade falhou" pra desconfiar depois.
+      const msg = `Power Automate ${res.status}: ${txt || res.statusText}`
+      marcarErroPa(call.id, msg)
+      throw new Error(msg)
+    }
     return txt
   }
 
@@ -338,10 +374,24 @@ export class SupabaseService {
     return parseRows(txt)
   }
 
-  // Leitura com cache por watermark (max updated_at). Faz UMA leitura mínima
-  // (1 linha) pra saber se a tabela mudou; se a watermark bate com o cache,
-  // devolve o cache sem puxar a tabela inteira. Só cacheia tabelas com
-  // updated_at (CACHEAVEIS); as demais caem no getAll normal.
+  // Leitura com cache por watermark. Faz uma leitura mínima pra saber se a
+  // tabela mudou; se a watermark bate com o cache, devolve o cache sem puxar a
+  // tabela inteira. Só tabelas com updated_at (CACHEAVEIS); as demais caem no
+  // getAll normal.
+  //
+  // A WATERMARK TEM DUAS METADES, E A SEGUNDA EXISTE POR UM MOTIVO CONCRETO.
+  //
+  // max(updated_at) sozinho NÃO enxerga remoção. Apagar uma linha não mexe no
+  // updated_at de nenhuma que ficou — então a watermark não se move, o cache
+  // "confere", e a lista continua mostrando o que já não existe. Era o que
+  // fazia item apagado não sumir da tela: ele tinha sumido do banco.
+  //
+  // Só falhava às vezes porque a mesma aba invalida o cache ao apagar
+  // (invalidarCache no del) e porque recarregar a página zera tudo. Sobrava o
+  // caso real de todo dia: apagado noutra aba, noutra máquina, ou pelo Coreon.
+  //
+  // A outra metade é max(deleted_at) da tabela 'delecoes', que ganha uma linha
+  // por DELETE via gatilho. Mesma fonte que o Coreon já usa pro sync dele.
   private async getAllCached(table: string, params: string): Promise<Row[]> {
     if (!CACHEAVEIS.has(table)) return this.getAll(table, params)
 
@@ -355,12 +405,33 @@ export class SupabaseService {
       return this.getAll(table, params)
     }
 
+    wm += '|' + (await this.ultimaDelecao(table))
+
     const hit = cacheLeitura.get(chave)
     if (hit && wm && hit.wm === wm) return hit.rows
 
     const rows = await this.getAll(table, params)
     if (wm) cacheLeitura.set(chave, { wm, rows })
     return rows
+  }
+
+  // Quando foi a última remoção nesta tabela. '' se ainda não houve.
+  //
+  // 'nao-sei' quando a consulta falha — tipicamente 'delecoes' ainda sem os
+  // gatilhos, ou sem a tabela. Um valor diferente a cada chamada faria o cache
+  // nunca acertar; um valor fixo e reconhecível deixa o cache funcionando como
+  // antes, cego a remoções, que é o comportamento anterior e não uma piora.
+  private async ultimaDelecao(table: string): Promise<string> {
+    try {
+      const r = await this.getAll(
+        'delecoes',
+        `select=deleted_at&tabela=eq.${encodeURIComponent(table)}` +
+          '&order=deleted_at.desc&limit=1',
+      )
+      return r.length ? String(r[0].deleted_at ?? '') : ''
+    } catch {
+      return 'nao-sei'
+    }
   }
 
   // Invalida o cache de leitura de uma tabela (após escrita da própria web).
@@ -386,6 +457,22 @@ export class SupabaseService {
 
   private async del(table: string, filter: string): Promise<void> {
     await this.pa({ op: 'DELETE', tabela: table, filtro: filter, usuario: this.usuario })
+    this.invalidarCache(table)
+  }
+
+  // UPDATE (PATCH) das linhas que casam com o filtro. Diferente do UPSERT: o
+  // UPSERT cria uma linha nova quando a chave muda, o UPDATE MOVE a existente —
+  // e é isso que dispara o "on update cascade" das FKs, levando os filhos junto
+  // numa transação só. Exige o ramo "UPDATE" no fluxo do Power Automate.
+  private async update(table: string, filter: string, valores: Row): Promise<void> {
+    if (!filter) throw new Error('UPDATE sem filtro atingiria a tabela inteira.')
+    await this.pa({
+      op: 'UPDATE',
+      tabela: table,
+      linhas: [valores],
+      filtro: filter,
+      usuario: this.usuario,
+    })
     this.invalidarCache(table)
   }
 
@@ -552,9 +639,39 @@ export class SupabaseService {
     await this.del('fornecedores', `nome=eq.${encodeURIComponent(nome)}`)
   }
 
-  // Rename preservando os materiais: cria o novo nome, recria os materiais sob
-  // ele e só então apaga o antigo (cascade limpa os materiais antigos).
+  // ── renomear fornecedor ────────────────────────────────────────────────────
+  //
+  // CAMINHO BOM: um UPDATE na chave. A FK de materiais é "on update cascade",
+  // então o Postgres move os materiais junto, na MESMA transação — nada é
+  // copiado e não existe instante em que os dois nomes coexistem.
+  //
+  // CAMINHO ANTIGO (plano B): cria o novo, copia os materiais, apaga o antigo.
+  // Funciona, mas são três operações soltas: rede caindo no meio deixa DOIS
+  // fornecedores, o novo sem materiais e o antigo intacto.
+  //
+  // O plano B fica porque o UPDATE depende de duas coisas fora deste código: o
+  // ramo "UPDATE" no fluxo do Power Automate e o "on update cascade" na FK.
+  // Faltando qualquer uma, o UPDATE falha — e falhar sem renomear seria pior
+  // que renomear pelo caminho antigo.
+  //
+  // forn_overrides fica de fora do cascade nos dois caminhos: é chave de JSONB,
+  // sem FK. Por isso a correção dos centros é sempre um passo à parte.
   private async renomearFornecedor(antigo: string, novo: string, data: Row): Promise<void> {
+    try {
+      await this.update(
+        'fornecedores',
+        `nome=eq.${encodeURIComponent(antigo)}`,
+        { nome: novo },
+      )
+      // Só depois de o nome ter migrado é que gravamos o resto da edição —
+      // assim um erro aqui deixa o fornecedor renomeado e íntegro.
+      await this.upsert('fornecedores', [buildFornRow(novo, data)], 'nome')
+      await this.renomearFornEmCentros(antigo, novo)
+      return
+    } catch (e) {
+      console.warn('renomearFornecedor: UPDATE atômico indisponível, usando copiar-e-apagar', e)
+    }
+
     await this.upsert('fornecedores', [buildFornRow(novo, data)], 'nome')
     const mats = await this.getAll(
       'materiais',
@@ -566,7 +683,26 @@ export class SupabaseService {
       )
       await this.upsert('materiais', rows, 'fornecedor,codigo')
     }
+    await this.renomearFornEmCentros(antigo, novo)
     await this.removerFornecedor(antigo)
+  }
+
+  // centros.forn_overrides é um JSONB com o NOME do fornecedor como chave. Não
+  // há FK ali, então nenhum cascade alcança: sem isto, renomear deixava o
+  // override preso ao nome antigo e ele parava de valer, calado.
+  // O Coreon já fazia (FornCadastroService.RenomearFornEmCentros) — aqui faltava.
+  private async renomearFornEmCentros(antigo: string, novo: string): Promise<void> {
+    const centros = await this.getAll('centros', 'select=centro,forn_overrides')
+    const rows: Row[] = []
+    for (const c of centros) {
+      const ov = c.forn_overrides as Record<string, unknown> | null | undefined
+      if (!ov || !Object.prototype.hasOwnProperty.call(ov, antigo)) continue
+      const novoOv = { ...ov }
+      novoOv[novo] = novoOv[antigo]
+      delete novoOv[antigo]
+      rows.push({ centro: c.centro, forn_overrides: novoOv })
+    }
+    if (rows.length > 0) await this.upsert('centros', rows, 'centro')
   }
 
   // ── cadastros por entidade (usuários) ──────────────────────────────────────
