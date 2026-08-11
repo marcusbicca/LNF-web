@@ -29,6 +29,8 @@
 // e devolve o corpo da API do Supabase (para SELECT, o array de linhas).
 // ─────────────────────────────────────────────────────────────────────────────
 
+import { registrarChamadaPa, marcarErroPa } from './paLog'
+
 export interface FileResult {
   data: unknown
   sha: string
@@ -306,22 +308,59 @@ export class SupabaseService {
 
   // Transporte único: POST para o fluxo do PA (que segura o secret), que executa
   // a operação no Supabase e devolve o corpo da API. Mesmo contrato do C#.
+  //
+  // Toda chamada entra no paLog. É o único lugar onde dá pra ver o par
+  // pedido/resposta quando o fluxo está com "Entradas e Saídas Seguras" ligada
+  // — nesse modo o histórico do Power Automate marca a run como bem-sucedida e
+  // esconde justamente os dois corpos.
   private async pa(payload: Record<string, unknown>): Promise<string> {
     this.assertConfigurado()
+    const corpo = JSON.stringify(payload)
+    const t0 = Date.now()
+
     let res: Response
     try {
       res = await fetch(this.paUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
+        body: corpo,
       })
     } catch (e) {
-      throw new Error('Falha de conexão com o Power Automate: ' + (e as Error).message)
+      const msg = 'Falha de conexão com o Power Automate: ' + (e as Error).message
+      registrarChamadaPa({
+        op: String(payload.op ?? '?'),
+        tabela: String(payload.tabela ?? ''),
+        pedido: corpo,
+        status: 0,
+        resposta: '',
+        ms: Date.now() - t0,
+        erro: msg,
+      })
+      throw new Error(msg)
     }
+
     const txt = await res.text()
-    if (!res.ok) throw new Error(`Power Automate ${res.status}: ${txt || res.statusText}`)
+    const call = registrarChamadaPa({
+      op: String(payload.op ?? '?'),
+      tabela: String(payload.tabela ?? ''),
+      pedido: corpo,
+      status: res.status,
+      resposta: txt,
+      ms: Date.now() - t0,
+    })
+
+    if (!res.ok) {
+      const msg = `Power Automate ${res.status}: ${txt || res.statusText}`
+      marcarErroPa(call.id, msg)
+      throw new Error(msg)
+    }
+    this.ultimaChamadaId = call.id
     return txt
   }
+
+  // Id da última chamada bem-sucedida em HTTP, pra marcar no log quando a
+  // inspeção do CORPO revelar que ela não deu certo de verdade.
+  private ultimaChamadaId = 0
 
   // SELECT via PA (op=SELECT), numa chamada só. O teto de linhas é controlado
   // pelo "Max rows" do Supabase (mantido alto o bastante pros dados). usuario
@@ -368,6 +407,49 @@ export class SupabaseService {
     for (const k of cacheLeitura.keys()) if (k.startsWith(table + '|')) cacheLeitura.delete(k)
   }
 
+  // Uma escrita que volta com HTTP 200 ainda pode ter falhado.
+  //
+  // O fluxo do Power Automate responde com o corpo da chamada REST, mas o
+  // status é o DELE, não o do Supabase — um erro do PostgREST ("permission
+  // denied", "violates foreign key") chega como 200 com o erro no corpo. As
+  // escritas descartavam esse corpo inteiro, e por isso qualquer recusa do
+  // banco aparecia na tela como sucesso.
+  //
+  // O QUE CONTA COMO ERRO, e por que só isso:
+  //
+  //   'code' que não seja 2xx  — erro do PostgREST. Ele SEMPRE manda code (o
+  //                              SQLSTATE: 42501, 23503...), então é o sinal
+  //                              confiável.
+  //   'error' preenchido       — formato de gateway (Supabase, o próprio
+  //                              fluxo): { error, error_description }.
+  //
+  // Um corpo com só 'message' NÃO derruba a escrita: fluxo que responde
+  // { "message": "ok" } no caminho feliz é comum demais, e virar exceção aí
+  // quebraria gravação que funciona. Vai pro paLog e segue.
+  private conferirEscrita(txt: string, oQue: string): void {
+    let p: unknown
+    try {
+      p = parseJson(txt)
+    } catch {
+      return // não é JSON: nada a acusar
+    }
+    if (!p || typeof p !== 'object' || Array.isArray(p)) return
+
+    const o = p as Record<string, unknown>
+    const code = o.code == null ? '' : String(o.code)
+    const codeRuim = code !== '' && !code.startsWith('2') && code.toLowerCase() !== 'ok'
+    const temErro = o.error != null && String(o.error) !== ''
+
+    if (!codeRuim && !temErro) return
+
+    const partes = [o.code, o.message, o.error, o.error_description, o.details, o.hint]
+      .filter(v => v != null && String(v) !== '')
+      .map(String)
+    const erro = `${oQue} recusado pelo banco: ${partes.join(' — ') || txt}`
+    if (this.ultimaChamadaId) marcarErroPa(this.ultimaChamadaId, erro)
+    throw new Error(erro)
+  }
+
   private async upsert(table: string, rows: Row[], onConflict: string | null): Promise<void> {
     if (rows.length === 0) return
     const chunk = 500
@@ -379,14 +461,49 @@ export class SupabaseService {
         usuario: this.usuario,
       }
       if (onConflict) payload.conflito = onConflict
-      await this.pa(payload)
+      this.conferirEscrita(await this.pa(payload), `UPSERT em ${table}`)
     }
     this.invalidarCache(table)
   }
 
+  // DELETE + CONFERÊNCIA.
+  //
+  // O PostgREST devolve 204 tanto pra "apaguei" quanto pra "não casou nada" —
+  // e o fluxo devolve 200 mesmo quando a chamada interna foi recusada. Ou seja:
+  // sem reler, "sumiu" e "não saiu do lugar" são a mesma resposta, e era esse
+  // empate que fazia a tela dizer "removida" com a linha ainda no banco.
+  //
+  // A conferência é um SELECT com o MESMO filtro. Custa uma ida a mais por
+  // remoção; em troca, uma remoção que não aconteceu passa a doer na hora, com
+  // o filtro que foi usado dentro da mensagem.
   private async del(table: string, filter: string): Promise<void> {
-    await this.pa({ op: 'DELETE', tabela: table, filtro: filter, usuario: this.usuario })
+    this.conferirEscrita(
+      await this.pa({ op: 'DELETE', tabela: table, filtro: filter, usuario: this.usuario }),
+      `DELETE em ${table}`,
+    )
     this.invalidarCache(table)
+
+    const idDelete = this.ultimaChamadaId
+    let sobrou = false
+    try {
+      sobrou = (await this.getAll(table, `select=*&${filter}&limit=1`)).length > 0
+    } catch {
+      // A conferência não conseguiu ler. Não inventa falha por causa disso —
+      // o DELETE em si respondeu bem.
+      return
+    }
+
+    if (sobrou) {
+      const erro =
+        `O fluxo respondeu OK, mas a linha continua em ${table}.\n` +
+        `Filtro usado: ${filter}\n` +
+        `Quase sempre é o fluxo do Power Automate ignorando o campo "filtro" na ` +
+        `operação DELETE, ou usando uma chave sem permissão de escrita ` +
+        `(anon em vez de service_role). Veja o par pedido/resposta em ` +
+        `Configurações › Diagnóstico do Power Automate.`
+      if (idDelete) marcarErroPa(idDelete, erro)
+      throw new Error(erro)
+    }
   }
 
   // UPDATE (PATCH) das linhas que casam com o filtro. Diferente do UPSERT: o
