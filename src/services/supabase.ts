@@ -374,10 +374,24 @@ export class SupabaseService {
     return parseRows(txt)
   }
 
-  // Leitura com cache por watermark (max updated_at). Faz UMA leitura mínima
-  // (1 linha) pra saber se a tabela mudou; se a watermark bate com o cache,
-  // devolve o cache sem puxar a tabela inteira. Só cacheia tabelas com
-  // updated_at (CACHEAVEIS); as demais caem no getAll normal.
+  // Leitura com cache por watermark. Faz uma leitura mínima pra saber se a
+  // tabela mudou; se a watermark bate com o cache, devolve o cache sem puxar a
+  // tabela inteira. Só tabelas com updated_at (CACHEAVEIS); as demais caem no
+  // getAll normal.
+  //
+  // A WATERMARK TEM DUAS METADES, E A SEGUNDA EXISTE POR UM MOTIVO CONCRETO.
+  //
+  // max(updated_at) sozinho NÃO enxerga remoção. Apagar uma linha não mexe no
+  // updated_at de nenhuma que ficou — então a watermark não se move, o cache
+  // "confere", e a lista continua mostrando o que já não existe. Era o que
+  // fazia item apagado não sumir da tela: ele tinha sumido do banco.
+  //
+  // Só falhava às vezes porque a mesma aba invalida o cache ao apagar
+  // (invalidarCache no del) e porque recarregar a página zera tudo. Sobrava o
+  // caso real de todo dia: apagado noutra aba, noutra máquina, ou pelo Coreon.
+  //
+  // A outra metade é max(deleted_at) da tabela 'delecoes', que ganha uma linha
+  // por DELETE via gatilho. Mesma fonte que o Coreon já usa pro sync dele.
   private async getAllCached(table: string, params: string): Promise<Row[]> {
     if (!CACHEAVEIS.has(table)) return this.getAll(table, params)
 
@@ -391,12 +405,33 @@ export class SupabaseService {
       return this.getAll(table, params)
     }
 
+    wm += '|' + (await this.ultimaDelecao(table))
+
     const hit = cacheLeitura.get(chave)
     if (hit && wm && hit.wm === wm) return hit.rows
 
     const rows = await this.getAll(table, params)
     if (wm) cacheLeitura.set(chave, { wm, rows })
     return rows
+  }
+
+  // Quando foi a última remoção nesta tabela. '' se ainda não houve.
+  //
+  // 'nao-sei' quando a consulta falha — tipicamente 'delecoes' ainda sem os
+  // gatilhos, ou sem a tabela. Um valor diferente a cada chamada faria o cache
+  // nunca acertar; um valor fixo e reconhecível deixa o cache funcionando como
+  // antes, cego a remoções, que é o comportamento anterior e não uma piora.
+  private async ultimaDelecao(table: string): Promise<string> {
+    try {
+      const r = await this.getAll(
+        'delecoes',
+        `select=deleted_at&tabela=eq.${encodeURIComponent(table)}` +
+          '&order=deleted_at.desc&limit=1',
+      )
+      return r.length ? String(r[0].deleted_at ?? '') : ''
+    } catch {
+      return 'nao-sei'
+    }
   }
 
   // Invalida o cache de leitura de uma tabela (após escrita da própria web).
