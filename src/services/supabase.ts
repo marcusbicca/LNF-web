@@ -510,15 +510,24 @@ export class SupabaseService {
   // UPSERT cria uma linha nova quando a chave muda, o UPDATE MOVE a existente —
   // e é isso que dispara o "on update cascade" das FKs, levando os filhos junto
   // numa transação só. Exige o ramo "UPDATE" no fluxo do Power Automate.
+  //
+  // A conferência do corpo é decisiva AQUI, e não só higiene: o
+  // renomearFornecedor conta com o throw pra cair no caminho antigo quando o
+  // ramo "UPDATE" não existe no fluxo. Sem ela, uma recusa que chega dentro de
+  // um HTTP 200 passaria por sucesso — o fornecedor não seria renomeado e o
+  // plano B nunca rodaria.
   private async update(table: string, filter: string, valores: Row): Promise<void> {
     if (!filter) throw new Error('UPDATE sem filtro atingiria a tabela inteira.')
-    await this.pa({
-      op: 'UPDATE',
-      tabela: table,
-      linhas: [valores],
-      filtro: filter,
-      usuario: this.usuario,
-    })
+    this.conferirEscrita(
+      await this.pa({
+        op: 'UPDATE',
+        tabela: table,
+        linhas: [valores],
+        filtro: filter,
+        usuario: this.usuario,
+      }),
+      `UPDATE em ${table}`,
+    )
     this.invalidarCache(table)
   }
 
