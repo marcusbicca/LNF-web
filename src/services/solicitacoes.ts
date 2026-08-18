@@ -120,68 +120,98 @@ export class SolicitacoesService {
   ) {}
 
   /**
-   * Cria a solicitação e devolve a linha recém-criada.
+   * Cria a solicitação. NÃO tenta descobrir o id dela.
    *
-   * O insert vai por UPSERT sem onConflict (o id é bigserial, então nunca há
-   * conflito) — é o caminho de escrita que o fluxo já conhece. Como o PA não
-   * devolve a linha inserida, relemos pelo par sessao_id/acao mais recente.
+   * POR QUE NÃO. A versão anterior relia a tabela logo após o insert para
+   * aprender o id, e depois esperava por esse id. Dois passos frágeis onde
+   * bastava zero: o fluxo do PA não devolve a linha inserida, então o id era um
+   * palpite baseado em "a mais recente que casa acao + sessao_id" — e a espera
+   * inteira dependia dele estar certo.
+   *
+   * O cliente JÁ tem um identificador que controla: o sessao_id, que ele mesmo
+   * gera. Esperar por (sessao_id, acao) não precisa aprender nada do servidor,
+   * então não há o que sair errado no caminho de volta.
+   *
+   * Por isso 'criar' virou fogo-e-esquece, e quem quer o resultado usa
+   * 'criarEAguardar'.
    */
-  async criar(n: NovaSolicitacao): Promise<Solicitacao> {
+  async criar(n: NovaSolicitacao): Promise<void> {
+    if (!n.sessaoId)
+      throw new Error('Toda solicitação precisa de sessaoId — é por ele que a resposta é encontrada.')
+
     const linha: Row = {
       criado_por: this.usuario || null,
       acao: n.acao,
       payload: n.payload ?? {},
+      sessao_id: n.sessaoId,
       status: 'pendente',
     }
-    if (n.sessaoId) linha.sessao_id = n.sessaoId
     if (n.destinatario) linha.destinatario = n.destinatario
     if (n.sapUsuario) linha.sap_usuario = n.sapUsuario
     if (n.sapSenha) linha.sap_senha = n.sapSenha
 
     await this.svc.salvarLinha(TABELA_ESCRITA, linha, null)
+  }
 
-    // Reler é a única forma de saber o id: o fluxo devolve o corpo do
-    // PostgREST, mas o caminho de UPSERT daqui não pede representation.
-    const filtros = [
-      `acao=eq.${encodeURIComponent(n.acao)}`,
-      n.sessaoId ? `sessao_id=eq.${encodeURIComponent(n.sessaoId)}` : '',
-    ]
-      .filter(Boolean)
-      .join('&')
+  /**
+   * Cria e espera a resposta, identificando a linha por (sessao_id, acao).
+   *
+   * A busca é sempre pela MAIS RECENTE que casa o par: reenviar a mesma ação na
+   * mesma sessão é normal (tentar de novo depois de um erro), e nesse caso quem
+   * interessa é a última.
+   */
+  async criarEAguardar(
+    n: NovaSolicitacao,
+    opts: { timeoutMs?: number; intervaloMs?: number; onTick?: (s: Solicitacao | null) => void } = {},
+  ): Promise<Solicitacao> {
+    const antes = await this.ultimaDaSessao(n.sessaoId!, n.acao)
+    const idAntes = antes?.id ?? 0
 
+    await this.criar(n)
+
+    const timeout = opts.timeoutMs ?? 5 * 60 * 1000
+    const intervalo = opts.intervaloMs ?? 4000
+    const ate = Date.now() + timeout
+
+    for (;;) {
+      // id > idAntes garante que estamos olhando a linha NOVA, e não uma
+      // execução anterior da mesma ação nesta sessão.
+      const s = await this.ultimaDaSessao(n.sessaoId!, n.acao)
+      const nova = s && s.id > idAntes ? s : null
+
+      opts.onTick?.(nova)
+      if (nova && encerrada(nova)) return nova
+
+      if (Date.now() >= ate) {
+        if (!nova)
+          throw new Error(
+            `A solicitação de '${n.acao}' não apareceu na sessão ${n.sessaoId} ` +
+              `em ${Math.round(timeout / 1000)}s. O insert não chegou à tabela ` +
+              `'${TABELA_ESCRITA}', ou a leitura em '${VIEW_LEITURA}' não a alcança.`,
+          )
+        throw new Error(
+          `A solicitação #${nova.id} continua em '${nova.status}' após ` +
+            `${Math.round(timeout / 1000)}s. ` +
+            (nova.status === 'pendente'
+              ? 'Nenhuma máquina a pegou — só Coreons acordados entram em ' +
+                'cadência rápida. Ela segue na fila; confira na aba Respostas.'
+              : `${nova.executor ?? 'Uma máquina'} está executando; ` +
+                'acompanhe na aba Respostas.'),
+        )
+      }
+
+      await new Promise((r) => setTimeout(r, intervalo))
+    }
+  }
+
+  /** A mais recente de uma ação dentro de uma sessão, ou null. */
+  async ultimaDaSessao(sessaoId: string, acao: string): Promise<Solicitacao | null> {
     const rows = await this.svc.lerLinhas(VIEW_LEITURA, {
-      filtros,
+      filtros: `sessao_id=eq.${encodeURIComponent(sessaoId)}&acao=eq.${encodeURIComponent(acao)}`,
       order: 'id.desc',
       limit: 1,
     })
-    if (!rows.length)
-      throw new Error(
-        `Solicitação de '${n.acao}' criada, mas a releitura em '${VIEW_LEITURA}' ` +
-          `não a encontrou (filtro: ${filtros}). O insert e a leitura estão ` +
-          `olhando lugares diferentes.`,
-      )
-
-    const s = toSolicitacao(rows[0])
-
-    // Sanidade: o id tem que ser um número real, e a linha tem que ser NOVA.
-    //
-    // A releitura acha a mais recente que casa acao + sessao_id. Se por algum
-    // motivo ela devolver uma linha antiga — sessao_id repetido, filtro que não
-    // pegou —, o aguardar ficaria esperando uma solicitação que já terminou
-    // ontem, ou pior, uma que nunca vai mudar de estado. Falhar aqui, com o que
-    // foi encontrado, é muito melhor do que um "expirou" cinco minutos depois.
-    if (!Number.isFinite(s.id) || s.id <= 0)
-      throw new Error(`Releitura devolveu id inválido (${JSON.stringify(rows[0].id)}).`)
-
-    const idadeMs = Date.now() - new Date(s.criado_em).getTime()
-    if (Number.isFinite(idadeMs) && idadeMs > 60_000)
-      throw new Error(
-        `A releitura devolveu a solicitação #${s.id}, criada há ` +
-          `${Math.round(idadeMs / 1000)}s — não é a que acabamos de inserir. ` +
-          `Verifique se o insert chegou à tabela '${TABELA_ESCRITA}'.`,
-      )
-
-    return s
+    return rows.length ? toSolicitacao(rows[0]) : null
   }
 
   async porId(id: number): Promise<Solicitacao | null> {
@@ -231,72 +261,6 @@ export class SolicitacoesService {
       }
     }
     return [...mapa.values()]
-  }
-
-  /**
-   * Relê até a solicitação encerrar.
-   *
-   * onTick existe para a tela poder dizer "pendente há 40s" em vez de ficar
-   * num spinner mudo — a espera pode ser longa e legítima (nenhuma máquina
-   * acordada), e um spinner sem informação faz o usuário achar que travou.
-   */
-  async aguardar(
-    id: number,
-    opts: { timeoutMs?: number; intervaloMs?: number; onTick?: (s: Solicitacao) => void } = {},
-  ): Promise<Solicitacao> {
-    const timeout = opts.timeoutMs ?? 5 * 60 * 1000
-    const intervalo = opts.intervaloMs ?? 4000
-    const ate = Date.now() + timeout
-
-    let vista: Solicitacao | null = null
-    let primeira = true
-
-    for (;;) {
-      const s = await this.porId(id)
-
-      // ⚠ LINHA NÃO ENCONTRADA É ERRO, NÃO "AINDA NÃO".
-      //
-      // Este laço já teve o defeito de tratar as duas coisas igual: porId
-      // devolve null quando a consulta não casa nada, e aqui se dormia e
-      // repetia calado até estourar — para então afirmar "não foi atendida a
-      // tempo, continua na fila". Uma linha que acabamos de criar não pode
-      // sumir, então null significa outra coisa: id errado, view apontando para
-      // lugar diferente do insert, filtro que não casa. Tudo isso ficava
-      // invisível atrás de um falso "expirou".
-      if (!s) {
-        if (primeira)
-          throw new Error(
-            `A solicitação #${id} não foi encontrada logo após ser criada. ` +
-              `Isso não é fila cheia — é a leitura não achando a linha que o ` +
-              `insert acabou de gravar. Confira se a view '${VIEW_LEITURA}' ` +
-              `existe (migração 0020) e se o ramo SELECT do fluxo a alcança.`,
-          )
-        throw new Error(
-          `A solicitação #${id} desapareceu durante a espera (estava em ` +
-            `'${vista?.status ?? '?'}'). Alguém a removeu da tabela?`,
-        )
-      }
-
-      primeira = false
-      vista = s
-      opts.onTick?.(s)
-      if (encerrada(s)) return s
-
-      // O texto só promete "continua na fila" quando a linha foi de fato vista
-      // pendente. Antes ele afirmava isso em qualquer caso.
-      if (Date.now() >= ate)
-        throw new Error(
-          `A solicitação #${id} continua em '${s.status}' após ` +
-            `${Math.round(timeout / 1000)}s. ` +
-            (s.status === 'pendente'
-              ? 'Nenhuma máquina a pegou — só Coreons acordados entram em ' +
-                'cadência rápida. Ela segue na fila; confira na aba Respostas.'
-              : `${s.executor ?? 'Uma máquina'} está executando; ` +
-                'acompanhe na aba Respostas.'),
-        )
-
-      await new Promise((r) => setTimeout(r, intervalo))
-    }
   }
 }
 
