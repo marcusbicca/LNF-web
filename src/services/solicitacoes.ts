@@ -121,6 +121,14 @@ function toSolicitacao(r: Row): Solicitacao {
 }
 
 /**
+ * Inatividade que mata uma sessão do lado do Coreon
+ * (`SessaoService.TtlMinutos`). Não é escolha desta tela: é a cópia de um
+ * número que manda lá. Mudou lá, muda aqui — senão a lista volta a oferecer
+ * sessão que não existe mais.
+ */
+export const TTL_SESSAO_MIN = 30
+
+/**
  * Id de sessão legível. Não precisa ser único no universo — só distinguir as
  * sessões vivas de um usuário, que expiram em 30 min de inatividade no Coreon.
  * Legível de propósito: ele aparece na tabela e a gente vai ler isso com o
@@ -351,30 +359,73 @@ export class SolicitacoesService {
     return rows.map(toSolicitacao)
   }
 
-  /** Sessões distintas vistas nas últimas N solicitações, mais recente primeiro. */
+  /**
+   * As sessões que ainda podem estar VIVAS, mais recente primeiro.
+   *
+   * Antes isto era histórico: toda sessão já vista na tabela ficava na lista
+   * para sempre, e a tela oferecia como destino sessões mortas há dias. Clicar
+   * numa delas nem dava erro — o Coreon criava outra, vazia, com o mesmo id, e
+   * o passo seguinte rodava sem o estado que ele esperava encontrar.
+   *
+   * Dois cortes, nesta ordem:
+   *
+   *  1. INATIVIDADE. O Coreon vence a sessão com {@link TTL_SESSAO_MIN} min sem
+   *     uso (SessaoService.TtlMinutos). Passado isso ela não existe mais lá, e
+   *     não há por que existir aqui. O relógio é o mesmo dos dois lados: a
+   *     última solicitação da sessão É o último uso dela.
+   *
+   *  2. PROVA DE MORTE. Se a solicitação mais recente da sessão voltou com
+   *     SESSAO_EXPIRADA, o Coreon já disse, com todas as letras, que não
+   *     conhece mais aquele id. Isso é fato, não estimativa, e pega o que o
+   *     relógio não pega: Coreon reiniciado, ou sessão descartada pelo teto de
+   *     20 vivas antes dos 30 min.
+   *
+   * O que sobra ainda é uma aposta — o Coreon pode ter caído há um minuto e
+   * ninguém ter tentado nada desde então. Mas agora é uma aposta barata: o
+   * EscopoOuCriar do lado de lá recusa id desconhecido em todo passo que não
+   * seja o de abertura, então errar dá uma mensagem clara em vez de uma sessão
+   * em branco fingindo que deu certo.
+   */
   async sessoesRecentes(limite = 200): Promise<
     Array<{ sessaoId: string; executor: string | null; ultima: string; qtd: number }>
   > {
     const rows = await this.listar({ limit: limite })
-    const mapa = new Map<string, { sessaoId: string; executor: string | null; ultima: string; qtd: number }>()
+    const corte = Date.now() - TTL_SESSAO_MIN * 60_000
+
+    const mapa = new Map<
+      string,
+      { sessaoId: string; executor: string | null; ultima: string; qtd: number; morta: boolean }
+    >()
+
     for (const s of rows) {
       if (!s.sessao_id) continue
+
       const atual = mapa.get(s.sessao_id)
       if (atual) {
         atual.qtd += 1
         // As linhas vêm id.desc, então o executor da mais recente já entrou;
         // só preenchemos se ainda não sabíamos de nenhum.
         if (!atual.executor && s.executor) atual.executor = s.executor
-      } else {
-        mapa.set(s.sessao_id, {
-          sessaoId: s.sessao_id,
-          executor: s.executor,
-          ultima: s.criado_em,
-          qtd: 1,
-        })
+        continue
       }
+
+      // Primeira vez que vemos a sessão = sua linha MAIS RECENTE (id.desc). É
+      // dela que saem o carimbo de atividade e o veredito de morte.
+      const quando = s.terminado_em || s.criado_em
+      if (!quando || Date.parse(quando) < corte) continue
+
+      mapa.set(s.sessao_id, {
+        sessaoId: s.sessao_id,
+        executor: s.executor,
+        ultima: quando,
+        qtd: 1,
+        morta: /SESSAO_EXPIRADA/i.test(s.erro ?? ''),
+      })
     }
+
     return [...mapa.values()]
+      .filter((s) => !s.morta)
+      .map(({ morta: _morta, ...s }) => s)
   }
 }
 

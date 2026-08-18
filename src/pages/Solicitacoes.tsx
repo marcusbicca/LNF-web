@@ -6,6 +6,7 @@ import {
   lerCatalogo,
   coagir,
   novaSessaoId,
+  TTL_SESSAO_MIN,
   type Catalogo,
   type Pipe,
   type Solicitacao,
@@ -46,6 +47,30 @@ interface SessaoAtiva {
   versaoCoreon: string
   loginSap: string
   aberta: string
+  /**
+   * Último uso — o relógio que conta, porque o TTL do Coreon é de
+   * INATIVIDADE, não de idade. Uma sessão aberta de manhã e usada agora está
+   * viva; uma aberta e abandonada há 40 min, não.
+   */
+  usada: string
+}
+
+/** Minutos desde um carimbo ISO. */
+function idadeMin(iso: string, agora: number): number {
+  const t = Date.parse(iso)
+  return Number.isNaN(t) ? Infinity : (agora - t) / 60_000
+}
+
+function vencida(s: SessaoAtiva, agora: number): boolean {
+  return idadeMin(s.usada || s.aberta, agora) >= TTL_SESSAO_MIN
+}
+
+function haQuanto(iso: string, agora: number): string {
+  const m = idadeMin(iso, agora)
+  if (!Number.isFinite(m)) return '—'
+  if (m < 1) return 'agora'
+  if (m < 60) return `há ${Math.floor(m)} min`
+  return `há ${Math.floor(m / 60)} h`
 }
 
 export function Solicitacoes() {
@@ -65,10 +90,39 @@ export function Solicitacoes() {
     const s = localStorage.getItem(CAT_KEY)
     return s ? (JSON.parse(s) as Catalogo) : null
   })
+  // A sessão guardada só volta se AINDA couber no TTL. Sem esta conta, um F5
+  // no dia seguinte restaurava uma sessão morta há horas e a tela seguia
+  // oferecendo enviar coisas para ela.
   const [sessao, setSessao] = useState<SessaoAtiva | null>(() => {
     const s = localStorage.getItem(SESS_KEY)
-    return s ? (JSON.parse(s) as SessaoAtiva) : null
+    if (!s) return null
+    try {
+      const g = JSON.parse(s) as SessaoAtiva
+      if (vencida(g, Date.now())) {
+        localStorage.removeItem(SESS_KEY)
+        return null
+      }
+      return g
+    } catch {
+      localStorage.removeItem(SESS_KEY)
+      return null
+    }
   })
+
+  // Relógio da tela. Uma sessão não vence só quando a página carrega: ela vence
+  // enquanto a aba fica aberta, e a tela tem que acompanhar.
+  const [agora, setAgora] = useState(() => Date.now())
+  useEffect(() => {
+    const t = setInterval(() => setAgora(Date.now()), 30_000)
+    return () => clearInterval(t)
+  }, [])
+
+  useEffect(() => {
+    if (sessao && vencida(sessao, agora)) {
+      setSessao(null)
+      localStorage.removeItem(SESS_KEY)
+    }
+  }, [agora, sessao])
 
   const [sessoes, setSessoes] = useState<
     Array<{ sessaoId: string; executor: string | null; ultima: string; qtd: number }>
@@ -96,6 +150,15 @@ export function Solicitacoes() {
   const pipe: Pipe | null = useMemo(
     () => catalogo?.pipes.find((p) => p.acao === acao) ?? null,
     [catalogo, acao],
+  )
+
+  // O serviço já corta pelo TTL na hora da consulta, mas a lista não pode
+  // congelar no instante do fetch: uma sessão que estava a 29 min quando a
+  // página carregou está morta cinco minutos depois, e a tela ainda a
+  // ofereceria. O corte vale de novo a cada tique do relógio.
+  const sessoesVivas = useMemo(
+    () => sessoes.filter((s) => idadeMin(s.ultima, agora) < TTL_SESSAO_MIN),
+    [sessoes, agora],
   )
 
   useEffect(() => {
@@ -174,6 +237,7 @@ export function Solicitacoes() {
         versaoCoreon: cat.versaoCoreon,
         loginSap: cat.loginSap,
         aberta: new Date().toISOString(),
+        usada: new Date().toISOString(),
       })
       // Sem pipes na resposta (IncluirPipes desmarcado), preserva o catálogo
       // que já estava guardado — ele não muda dentro de uma versão.
@@ -213,15 +277,30 @@ export function Solicitacoes() {
         const cat = lerCatalogo(r.resultado)
         if (!cat) continue
 
+        // O catálogo e a sessão vêm da mesma resposta mas têm validades
+        // diferentes, e tratá-los como um só era o que fazia esta escotilha
+        // ressuscitar sessão morta: o catálogo de pipes não vence (só muda de
+        // versão do Coreon para versão), a sessão vence em 30 min parada.
+        if (cat.pipes.length) setCatalogo(cat)
+
+        const quando = r.terminado_em || r.criado_em
+        if (idadeMin(quando, Date.now()) >= TTL_SESSAO_MIN) {
+          setProgresso(
+            `Catálogo recuperado, mas a última sessão (${cat.sessaoId || r.sessao_id}) ` +
+              `é de ${haQuanto(quando, Date.now())} e já venceu. Abra uma nova.`,
+          )
+          return
+        }
+
         setSessao({
           id: cat.sessaoId || r.sessao_id || '',
           executor: cat.executor || r.executor || '',
           maquina: cat.maquina || r.maquina || '',
           versaoCoreon: cat.versaoCoreon,
           loginSap: cat.loginSap,
-          aberta: r.terminado_em || r.criado_em,
+          aberta: quando,
+          usada: quando,
         })
-        if (cat.pipes.length) setCatalogo(cat)
         setProgresso('')
         return
       }
@@ -254,6 +333,16 @@ export function Solicitacoes() {
     setMarcados({})
   }
 
+  /**
+   * Renova o relógio de inatividade da sessão. Chamado depois de todo envio
+   * bem-sucedido, porque é isso que o Coreon faz do lado dele (Escopo() escreve
+   * UltimoUso a cada uso). Sem isto, uma sessão em uso ativo sumiria da tela
+   * 30 min depois de ABERTA, mesmo estando viva lá.
+   */
+  function marcarUso() {
+    setSessao((s) => (s ? { ...s, usada: new Date().toISOString() } : s))
+  }
+
   // ── sequência: enfileira aqui, dispara tudo de uma vez ────────────────────
   function enfileirar() {
     if (!pipe) return
@@ -280,6 +369,7 @@ export function Solicitacoes() {
         })),
       )
       setFila([])
+      marcarUso()
       setProgresso(
         'Sequência enviada. Ela roda passo a passo na máquina da sessão — ' +
           'acompanhe na aba Respostas.',
@@ -364,8 +454,19 @@ export function Solicitacoes() {
       )
 
       setUltima(pronta)
+      marcarUso()
       setProgresso('')
       void carregarSessoes()
+
+      // A sessão sumiu do lado de lá enquanto esta tela ainda a exibia
+      // (Coreon reiniciado, teto de sessões). O Coreon disse com todas as
+      // letras; guardar isso para nós seria repetir o problema que esta
+      // mudança veio resolver.
+      if (/SESSAO_EXPIRADA/i.test(pronta.erro ?? '')) {
+        setSessao(null)
+        localStorage.removeItem(SESS_KEY)
+        void carregarSessoes()
+      }
     } catch (e) {
       setErro((e as Error).message)
       setProgresso('')
@@ -391,6 +492,12 @@ export function Solicitacoes() {
           <div className="bg-zinc-900 rounded p-3 text-sm space-y-1">
             <div className="flex items-center gap-2">
               <span className="text-green-400 font-mono">{sessao.id}</span>
+              <span
+                className="text-xs text-zinc-500"
+                title={`Vence com ${TTL_SESSAO_MIN} min sem uso`}
+              >
+                vence em {Math.max(0, Math.ceil(TTL_SESSAO_MIN - idadeMin(sessao.usada, agora)))} min
+              </span>
               <button
                 onClick={() => {
                   setSessao(null)
@@ -467,11 +574,11 @@ export function Solicitacoes() {
           </div>
         </div>
 
-        {sessoes.length > 0 && (
+        {sessoesVivas.length > 0 && (
           <div className="pt-2 border-t border-zinc-800">
-            <div className="text-xs text-zinc-500 mb-1">Sessões recentes</div>
+            <div className="text-xs text-zinc-500 mb-1">Sessões ainda vivas</div>
             <div className="space-y-1 max-h-40 overflow-y-auto">
-              {sessoes.map((s) => (
+              {sessoesVivas.map((s) => (
                 <button
                   key={s.sessaoId}
                   onClick={() =>
@@ -482,18 +589,22 @@ export function Solicitacoes() {
                       versaoCoreon: '',
                       loginSap: '',
                       aberta: s.ultima,
+                      usada: s.ultima,
                     })
                   }
                   className={`w-full text-left text-xs font-mono px-2 py-1 rounded hover:bg-zinc-800 ${
                     sessao?.id === s.sessaoId ? 'bg-zinc-800 text-green-400' : 'text-zinc-400'
                   }`}
                 >
-                  {s.sessaoId} · {s.executor ?? '—'} · {s.qtd}
+                  {s.sessaoId} · {s.executor ?? '—'} · {s.qtd} ·{' '}
+                  <span className="text-zinc-600">{haQuanto(s.ultima, agora)}</span>
                 </button>
               ))}
             </div>
             <p className="text-xs text-zinc-600 mt-1">
-              Sessões expiram após 30 min sem uso, e somem se o Coreon reiniciar.
+              Só aparecem as usadas nos últimos {TTL_SESSAO_MIN} min — é o que o Coreon
+              guarda. Se ele reiniciou nesse meio-tempo, a sessão já não existe lá e a
+              primeira solicitação volta com SESSAO_EXPIRADA.
             </p>
           </div>
         )}
