@@ -154,8 +154,34 @@ export class SolicitacoesService {
       order: 'id.desc',
       limit: 1,
     })
-    if (!rows.length) throw new Error('Solicitação criada, mas não foi possível relê-la.')
-    return toSolicitacao(rows[0])
+    if (!rows.length)
+      throw new Error(
+        `Solicitação de '${n.acao}' criada, mas a releitura em '${VIEW_LEITURA}' ` +
+          `não a encontrou (filtro: ${filtros}). O insert e a leitura estão ` +
+          `olhando lugares diferentes.`,
+      )
+
+    const s = toSolicitacao(rows[0])
+
+    // Sanidade: o id tem que ser um número real, e a linha tem que ser NOVA.
+    //
+    // A releitura acha a mais recente que casa acao + sessao_id. Se por algum
+    // motivo ela devolver uma linha antiga — sessao_id repetido, filtro que não
+    // pegou —, o aguardar ficaria esperando uma solicitação que já terminou
+    // ontem, ou pior, uma que nunca vai mudar de estado. Falhar aqui, com o que
+    // foi encontrado, é muito melhor do que um "expirou" cinco minutos depois.
+    if (!Number.isFinite(s.id) || s.id <= 0)
+      throw new Error(`Releitura devolveu id inválido (${JSON.stringify(rows[0].id)}).`)
+
+    const idadeMs = Date.now() - new Date(s.criado_em).getTime()
+    if (Number.isFinite(idadeMs) && idadeMs > 60_000)
+      throw new Error(
+        `A releitura devolveu a solicitação #${s.id}, criada há ` +
+          `${Math.round(idadeMs / 1000)}s — não é a que acabamos de inserir. ` +
+          `Verifique se o insert chegou à tabela '${TABELA_ESCRITA}'.`,
+      )
+
+    return s
   }
 
   async porId(id: number): Promise<Solicitacao | null> {
@@ -222,17 +248,53 @@ export class SolicitacoesService {
     const intervalo = opts.intervaloMs ?? 4000
     const ate = Date.now() + timeout
 
+    let vista: Solicitacao | null = null
+    let primeira = true
+
     for (;;) {
       const s = await this.porId(id)
-      if (s) {
-        opts.onTick?.(s)
-        if (encerrada(s)) return s
+
+      // ⚠ LINHA NÃO ENCONTRADA É ERRO, NÃO "AINDA NÃO".
+      //
+      // Este laço já teve o defeito de tratar as duas coisas igual: porId
+      // devolve null quando a consulta não casa nada, e aqui se dormia e
+      // repetia calado até estourar — para então afirmar "não foi atendida a
+      // tempo, continua na fila". Uma linha que acabamos de criar não pode
+      // sumir, então null significa outra coisa: id errado, view apontando para
+      // lugar diferente do insert, filtro que não casa. Tudo isso ficava
+      // invisível atrás de um falso "expirou".
+      if (!s) {
+        if (primeira)
+          throw new Error(
+            `A solicitação #${id} não foi encontrada logo após ser criada. ` +
+              `Isso não é fila cheia — é a leitura não achando a linha que o ` +
+              `insert acabou de gravar. Confira se a view '${VIEW_LEITURA}' ` +
+              `existe (migração 0020) e se o ramo SELECT do fluxo a alcança.`,
+          )
+        throw new Error(
+          `A solicitação #${id} desapareceu durante a espera (estava em ` +
+            `'${vista?.status ?? '?'}'). Alguém a removeu da tabela?`,
+        )
       }
+
+      primeira = false
+      vista = s
+      opts.onTick?.(s)
+      if (encerrada(s)) return s
+
+      // O texto só promete "continua na fila" quando a linha foi de fato vista
+      // pendente. Antes ele afirmava isso em qualquer caso.
       if (Date.now() >= ate)
         throw new Error(
-          'A solicitação não foi atendida a tempo. Ela continua na fila — ' +
-            'confira na aba Respostas.',
+          `A solicitação #${id} continua em '${s.status}' após ` +
+            `${Math.round(timeout / 1000)}s. ` +
+            (s.status === 'pendente'
+              ? 'Nenhuma máquina a pegou — só Coreons acordados entram em ' +
+                'cadência rápida. Ela segue na fila; confira na aba Respostas.'
+              : `${s.executor ?? 'Uma máquina'} está executando; ` +
+                'acompanhe na aba Respostas.'),
         )
+
       await new Promise((r) => setTimeout(r, intervalo))
     }
   }
