@@ -6,6 +6,8 @@ import { Cadastros } from './pages/Cadastros'
 import { Tabelas } from './pages/Tabelas'
 import { Historico } from './pages/Historico'
 import { Configuracoes } from './pages/Configuracoes'
+import { Solicitacoes } from './pages/Solicitacoes'
+import { Respostas } from './pages/Respostas'
 
 export default function App() {
   const [page, setPage] = useState<Page>('mapeamento')
@@ -17,6 +19,8 @@ export default function App() {
         {page === 'cadastros' && <Cadastros />}
         {page === 'tabelas' && <Tabelas />}
         {page === 'historico' && <Historico />}
+        {page === 'solicitacoes' && <Solicitacoes />}
+        {page === 'respostas' && <Respostas />}
         {page === 'config' && <Configuracoes />}
       </Layout>
     </AppProvider>
