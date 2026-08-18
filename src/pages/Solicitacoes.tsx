@@ -9,6 +9,7 @@ import {
   type Catalogo,
   type Pipe,
   type Solicitacao,
+  type Universal,
 } from '../services/solicitacoes'
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -81,6 +82,12 @@ export function Solicitacoes() {
   const [valores, setValores] = useState<Record<string, string>>({})
   const [marcados, setMarcados] = useState<Record<string, boolean>>({})
 
+  // Fila local: os passos que o usuário montou antes de enviar. Só vira
+  // solicitação no banco quando ele manda — assim dá para revisar a sequência
+  // inteira antes de disparar.
+  const [fila, setFila] = useState<Array<{ acao: string; payload: Record<string, unknown> }>>([])
+  const [universais, setUniversais] = useState<Universal[]>([])
+
   const [ocupado, setOcupado] = useState<string | null>(null)
   const [progresso, setProgresso] = useState<string>('')
   const [erro, setErro] = useState<string | null>(null)
@@ -107,9 +114,20 @@ export function Solicitacoes() {
     }
   }, [sol])
 
+  const carregarUniversais = useCallback(async () => {
+    if (!sol) return
+    try {
+      setUniversais(await sol.listarUniversais(true))
+    } catch {
+      // A view é da 0021. Sem ela, a seção some — e o resto da tela continua.
+      setUniversais([])
+    }
+  }, [sol])
+
   useEffect(() => {
     void carregarSessoes()
-  }, [carregarSessoes])
+    void carregarUniversais()
+  }, [carregarSessoes, carregarUniversais])
 
   // ── 1. abrir sessão ────────────────────────────────────────────────────────
   async function abrirSessao() {
@@ -219,6 +237,99 @@ export function Solicitacoes() {
     }
   }
 
+  // Monta o payload do formulário atual. Compartilhado por enviar e enfileirar,
+  // para os dois nunca divergirem no tratamento de tipo.
+  function payloadAtual(): Record<string, unknown> {
+    const o: Record<string, unknown> = {}
+    if (!pipe) return o
+    for (const c of pipe.campos) {
+      const v = coagir(c.tipo, valores[c.nome] ?? '', marcados[c.nome] ?? false)
+      if (v !== undefined) o[c.nome] = v
+    }
+    return o
+  }
+
+  function limparFormulario() {
+    setValores({})
+    setMarcados({})
+  }
+
+  // ── sequência: enfileira aqui, dispara tudo de uma vez ────────────────────
+  function enfileirar() {
+    if (!pipe) return
+    setFila((f) => [...f, { acao: pipe.acao, payload: payloadAtual() }])
+    limparFormulario()
+  }
+
+  async function enviarFila() {
+    if (!sol || !sessao || !fila.length) return
+    setErro(null)
+    setOcupado('fila')
+    setProgresso(`Enfileirando ${fila.length} passo(s)…`)
+
+    try {
+      // Todas de uma vez, sem esperar entre elas. Quem garante a ordem é o
+      // banco: a segunda só fica reservável quando a primeira CONCLUIR, e só
+      // para a máquina que pegou a primeira.
+      await sol.criarSequencia(
+        sessao.id,
+        fila.map((f) => ({
+          acao: f.acao,
+          payload: f.payload,
+          destinatario: sessao.executor || undefined,
+        })),
+      )
+      setFila([])
+      setProgresso(
+        'Sequência enviada. Ela roda passo a passo na máquina da sessão — ' +
+          'acompanhe na aba Respostas.',
+      )
+      void carregarSessoes()
+    } catch (e) {
+      setErro((e as Error).message)
+      setProgresso('')
+    } finally {
+      setOcupado(null)
+    }
+  }
+
+  // ── universal: vale para todos, fica em pé ────────────────────────────────
+  async function enviarUniversal() {
+    if (!sol || !pipe) return
+    setErro(null)
+    setOcupado('universal')
+    setProgresso('Criando solicitação universal…')
+
+    try {
+      // Sem sessão e sem destinatário de propósito: ela roda em TODAS as
+      // máquinas, uma vez em cada. E não se espera por ela aqui — ela termina
+      // quando você a encerra, não quando alguém executa.
+      await sol.criar({ acao: pipe.acao, payload: payloadAtual(), universal: true })
+      limparFormulario()
+      setProgresso('')
+      void carregarUniversais()
+    } catch (e) {
+      setErro((e as Error).message)
+      setProgresso('')
+    } finally {
+      setOcupado(null)
+    }
+  }
+
+  async function encerrar(id: number) {
+    if (!sol) return
+    setErro(null)
+    setOcupado('encerrar')
+    try {
+      await sol.encerrarUniversal(id)
+      await carregarUniversais()
+    } catch (e) {
+      setErro((e as Error).message)
+    } finally {
+      setOcupado(null)
+    }
+  }
+
   // ── 3. enviar ──────────────────────────────────────────────────────────────
   async function enviar() {
     if (!sol || !pipe || !sessao) return
@@ -227,11 +338,7 @@ export function Solicitacoes() {
     setProgresso('Criando solicitação…')
 
     try {
-      const payload: Record<string, unknown> = {}
-      for (const c of pipe.campos) {
-        const v = coagir(c.tipo, valores[c.nome] ?? '', marcados[c.nome] ?? false)
-        if (v !== undefined) payload[c.nome] = v
-      }
+      const payload = payloadAtual()
 
       const t0 = Date.now()
       const pronta = await sol.criarEAguardar(
@@ -449,14 +556,128 @@ export function Solicitacoes() {
               disabled={!!ocupado || !pipe || !sessao}
               className="bg-green-700 hover:bg-green-600 disabled:opacity-40 rounded px-3 py-1.5 text-sm"
             >
-              {ocupado === 'enviar' ? 'Enviando…' : 'Enviar solicitação'}
+              {ocupado === 'enviar' ? 'Enviando…' : 'Enviar agora'}
             </button>
+
+            <button
+              onClick={enfileirar}
+              disabled={!!ocupado || !pipe}
+              title="Acrescenta este passo à sequência, sem enviar ainda"
+              className="ml-2 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-40 rounded px-3 py-1.5 text-sm"
+            >
+              + à sequência
+            </button>
+
+            <button
+              onClick={enviarUniversal}
+              disabled={!!ocupado || !pipe}
+              title="Vale para TODOS os usuários e fica em pé até você encerrar"
+              className="ml-2 bg-amber-800 hover:bg-amber-700 disabled:opacity-40 rounded px-3 py-1.5 text-sm"
+            >
+              {ocupado === 'universal' ? 'Criando…' : 'Enviar a todos'}
+            </button>
+
             {!sessao && pipe && (
               <p className="text-xs text-amber-500">Abra ou escolha uma sessão primeiro.</p>
             )}
           </>
         )}
       </section>
+
+      {/* ── sequência montada ──────────────────────────────────────────────── */}
+      {fila.length > 0 && (
+        <section className="border border-zinc-800 rounded p-4 space-y-3">
+          <h2 className="font-semibold">Sequência ({fila.length})</h2>
+          <p className="text-xs text-zinc-500">
+            Vão todas de uma vez, mas rodam <b>em ordem</b> e na <b>mesma máquina</b>. Se
+            uma falhar, as seguintes não saem — corrija e reenvie só ela.
+          </p>
+
+          <ol className="space-y-1 text-sm">
+            {fila.map((f, i) => (
+              <li key={i} className="flex items-start gap-2 bg-zinc-900 rounded px-2 py-1">
+                <span className="text-zinc-600">{i + 1}.</span>
+                <span className="font-mono">{f.acao}</span>
+                <span className="text-xs text-zinc-500 truncate flex-1" title={JSON.stringify(f.payload)}>
+                  {Object.keys(f.payload).length
+                    ? Object.keys(f.payload).join(', ')
+                    : '(sem campos)'}
+                </span>
+                <button
+                  onClick={() => setFila((x) => x.filter((_, j) => j !== i))}
+                  className="text-xs text-zinc-500 hover:text-red-400"
+                >
+                  remover
+                </button>
+              </li>
+            ))}
+          </ol>
+
+          <div className="flex gap-2">
+            <button
+              onClick={enviarFila}
+              disabled={!!ocupado || !sessao}
+              className="bg-green-700 hover:bg-green-600 disabled:opacity-40 rounded px-3 py-1.5 text-sm"
+            >
+              {ocupado === 'fila' ? 'Enviando…' : `Enviar sequência (${fila.length})`}
+            </button>
+            <button
+              onClick={() => setFila([])}
+              disabled={!!ocupado}
+              className="bg-zinc-800 hover:bg-zinc-700 disabled:opacity-40 rounded px-3 py-1.5 text-sm"
+            >
+              Limpar
+            </button>
+          </div>
+        </section>
+      )}
+
+      {/* ── universais em circulação ───────────────────────────────────────── */}
+      {universais.length > 0 && (
+        <section className="border border-amber-900/50 rounded p-4 space-y-3">
+          <h2 className="font-semibold text-amber-500">
+            Em circulação para todos ({universais.length})
+          </h2>
+          <p className="text-xs text-zinc-500">
+            Enquanto houver uma aberta, toda máquina desperta consulta a cada minuto.
+            Encerre quando terminar de circular.
+          </p>
+
+          {universais.map((u) => (
+            <div key={u.id} className="bg-zinc-900 rounded p-3 space-y-2 text-sm">
+              <div className="flex items-center gap-2">
+                <span className="text-zinc-600">#{u.id}</span>
+                <span className="font-mono">{u.acao}</span>
+                <span className="ml-auto text-xs text-zinc-500">
+                  {u.concluidas}/{u.usuarios}
+                  {u.com_erro > 0 && <span className="text-red-400"> · {u.com_erro} com erro</span>}
+                </span>
+              </div>
+
+              <div className="h-1.5 bg-zinc-800 rounded overflow-hidden">
+                <div
+                  className="h-full bg-green-600"
+                  style={{ width: `${u.usuarios ? (u.concluidas / u.usuarios) * 100 : 0}%` }}
+                />
+              </div>
+
+              {u.faltam.length > 0 && (
+                <div className="text-xs text-zinc-500">
+                  <span className="text-zinc-600">faltam:</span> {u.faltam.join(', ')}
+                </div>
+              )}
+
+              <button
+                onClick={() => encerrar(u.id)}
+                disabled={!!ocupado}
+                className="bg-zinc-800 hover:bg-zinc-700 disabled:opacity-40 rounded px-3 py-1 text-xs"
+              >
+                Encerrar
+              </button>
+            </div>
+          ))}
+        </section>
+      )}
 
       {progresso && (
         <div className="text-sm text-zinc-400 border border-zinc-800 rounded p-3">

@@ -779,6 +779,33 @@ export class SupabaseService {
   async deletarLinha(table: string, filtro: string): Promise<void> {
     await this.del(table, filtro)
   }
+
+  /**
+   * Chama uma função do Postgres (POST /rest/v1/rpc/<funcao>) pelo fluxo.
+   *
+   * Exige o ramo op:"RPC" no Power Automate — o mesmo que o Coreon usa para
+   * reservar solicitação. É POST porque a função escreve: o PostgREST roda GET
+   * em transação read-only e recusaria.
+   *
+   * ⚠ A função chamada NÃO pode ser 'returns void'. Void faz o PostgREST
+   *   responder 204 sem corpo, e corpo vazio aqui é indistinguível de uma
+   *   resposta perdida no caminho — por isso as funções do 0021 devolvem
+   *   boolean.
+   */
+  async rpc(funcao: string, args: Record<string, unknown>): Promise<unknown> {
+    const txt = await this.pa({
+      op: 'RPC',
+      funcao,
+      args,
+      usuario: this.usuario,
+    })
+    if (!txt.trim())
+      throw new Error(
+        `RPC '${funcao}' devolveu corpo vazio. O ramo RPC do fluxo não está ` +
+          `repassando a resposta, ou a função é 'returns void'.`,
+      )
+    return parseJson(txt)
+  }
 }
 
 // Compara as colunas de negócio de materiais (ignora updated_at etc.).

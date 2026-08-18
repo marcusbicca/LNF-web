@@ -67,9 +67,31 @@ export interface NovaSolicitacao {
   destinatario?: string
   sapUsuario?: string
   sapSenha?: string
+  /** Vale para TODOS os usuários e fica em pé até ser encerrada. */
+  universal?: boolean
 }
 
-/** Terminou (para o bem ou para o mal) — nada mais vai mudar sozinho. */
+/** Progresso de uma solicitação universal (view solicitacoes_universais). */
+export interface Universal {
+  id: number
+  criado_em: string
+  criado_por: string | null
+  acao: string
+  payload: unknown
+  status: StatusSolicitacao
+  usuarios: number
+  concluidas: number
+  com_erro: number
+  faltam: string[]
+}
+
+/**
+ * Terminou (para o bem ou para o mal) — nada mais vai mudar sozinho.
+ *
+ * 'aberta' NÃO entra: é o estado de uma universal circulando, e ela só termina
+ * quando alguém a encerra. Esperar por uma universal na tela seria esperar por
+ * uma decisão humana.
+ */
 export function encerrada(s: Pick<Solicitacao, 'status'>): boolean {
   return s.status === 'concluida' || s.status === 'erro' || s.status === 'expirada'
 }
@@ -136,16 +158,23 @@ export class SolicitacoesService {
    * 'criarEAguardar'.
    */
   async criar(n: NovaSolicitacao): Promise<void> {
-    if (!n.sessaoId)
+    // Universal não tem sessão: ela roda em TODAS as máquinas, e sessão é
+    // estado que sobrevive entre passos numa só. O banco recusa a combinação
+    // (constraint), então recusar aqui dá um erro melhor.
+    if (n.universal && n.sessaoId)
+      throw new Error('Solicitação universal não pode ter sessão — ela roda em todas as máquinas.')
+    if (!n.universal && !n.sessaoId)
       throw new Error('Toda solicitação precisa de sessaoId — é por ele que a resposta é encontrada.')
 
     const linha: Row = {
       criado_por: this.usuario || null,
       acao: n.acao,
       payload: n.payload ?? {},
-      sessao_id: n.sessaoId,
-      status: 'pendente',
+      // 'aberta' é o estado de quem circula; 'pendente' é o de quem tem um dono.
+      status: n.universal ? 'aberta' : 'pendente',
     }
+    if (n.universal) linha.universal = true
+    if (n.sessaoId) linha.sessao_id = n.sessaoId
     if (n.destinatario) linha.destinatario = n.destinatario
     if (n.sapUsuario) linha.sap_usuario = n.sapUsuario
     if (n.sapSenha) linha.sap_senha = n.sapSenha
@@ -169,6 +198,26 @@ export class SolicitacoesService {
 
     await this.criar(n)
 
+    return this.aguardarNaSessao(n.sessaoId!, n.acao, idAntes, opts)
+  }
+
+  /**
+   * Espera a resposta de (sessao_id, acao) cujo id seja maior que idAntes.
+   *
+   * Separado do criarEAguardar de propósito: assim a espera pode ser RETOMADA
+   * por quem não fez o insert — a tela guarda (sessaoId, acao, idAntes) e volta
+   * a esperar depois de trocar de aba ou recarregar a página.
+   *
+   * Sem isso a espera morria com o componente: trocar para a aba Respostas
+   * desmonta a de Solicitações, a promessa continua rodando e os setState dela
+   * caem no vazio. O resultado chegava e se perdia.
+   */
+  async aguardarNaSessao(
+    sessaoId: string,
+    acao: string,
+    idAntes: number,
+    opts: { timeoutMs?: number; intervaloMs?: number; onTick?: (s: Solicitacao | null) => void } = {},
+  ): Promise<Solicitacao> {
     const timeout = opts.timeoutMs ?? 5 * 60 * 1000
     const intervalo = opts.intervaloMs ?? 4000
     const ate = Date.now() + timeout
@@ -176,7 +225,7 @@ export class SolicitacoesService {
     for (;;) {
       // id > idAntes garante que estamos olhando a linha NOVA, e não uma
       // execução anterior da mesma ação nesta sessão.
-      const s = await this.ultimaDaSessao(n.sessaoId!, n.acao)
+      const s = await this.ultimaDaSessao(sessaoId, acao)
       const nova = s && s.id > idAntes ? s : null
 
       opts.onTick?.(nova)
@@ -185,7 +234,7 @@ export class SolicitacoesService {
       if (Date.now() >= ate) {
         if (!nova)
           throw new Error(
-            `A solicitação de '${n.acao}' não apareceu na sessão ${n.sessaoId} ` +
+            `A solicitação de '${acao}' não apareceu na sessão ${sessaoId} ` +
               `em ${Math.round(timeout / 1000)}s. O insert não chegou à tabela ` +
               `'${TABELA_ESCRITA}', ou a leitura em '${VIEW_LEITURA}' não a alcança.`,
           )
@@ -202,6 +251,71 @@ export class SolicitacoesService {
 
       await new Promise((r) => setTimeout(r, intervalo))
     }
+  }
+
+  /**
+   * Enfileira VÁRIAS solicitações na mesma sessão, de uma vez.
+   *
+   * Não espera entre elas, e não precisa: o banco só libera a segunda quando a
+   * primeira CONCLUIR, e só para a máquina que pegou a primeira (0021). Falhou
+   * uma, as seguintes nunca são reservadas — corrija e reenvie só ela, que a
+   * fila volta a andar.
+   *
+   * A ordem é a do array. O banco ordena por id, e um insert único gera ids
+   * crescentes na ordem das linhas.
+   */
+  async criarSequencia(
+    sessaoId: string,
+    passos: Array<Omit<NovaSolicitacao, 'sessaoId' | 'universal'>>,
+  ): Promise<void> {
+    if (!passos.length) return
+
+    const linhas: Row[] = passos.map((p) => {
+      const l: Row = {
+        criado_por: this.usuario || null,
+        acao: p.acao,
+        payload: p.payload ?? {},
+        sessao_id: sessaoId,
+        status: 'pendente',
+      }
+      if (p.destinatario) l.destinatario = p.destinatario
+      if (p.sapUsuario) l.sap_usuario = p.sapUsuario
+      if (p.sapSenha) l.sap_senha = p.sapSenha
+      return l
+    })
+
+    // Um único UPSERT: as linhas entram na mesma instrução, então os ids saem
+    // na ordem do array. Mandar uma por vez abriria a chance de outra máquina
+    // pegar a primeira antes de a segunda existir — e aí a sequência começaria
+    // sem estar inteira.
+    await this.svc.upsertBruto(TABELA_ESCRITA, linhas, null)
+  }
+
+  // ── universais ─────────────────────────────────────────────────────────────
+
+  async listarUniversais(apenasAbertas = false): Promise<Universal[]> {
+    const rows = await this.svc.lerLinhas('solicitacoes_universais', {
+      order: 'id.desc',
+      filtros: apenasAbertas ? 'status=eq.aberta' : undefined,
+      limit: 50,
+    })
+    return rows.map((r) => ({
+      id: Number(r.id ?? 0),
+      criado_em: String(r.criado_em ?? ''),
+      criado_por: (r.criado_por as string) ?? null,
+      acao: String(r.acao ?? ''),
+      payload: r.payload ?? null,
+      status: (r.status as StatusSolicitacao) ?? 'aberta',
+      usuarios: Number(r.usuarios ?? 0),
+      concluidas: Number(r.concluidas ?? 0),
+      com_erro: Number(r.com_erro ?? 0),
+      faltam: Array.isArray(r.faltam) ? (r.faltam as string[]) : [],
+    }))
+  }
+
+  /** O "seu comando": tira a universal de circulação. */
+  async encerrarUniversal(id: number): Promise<void> {
+    await this.svc.rpc('encerrar_universal', { p_id: id })
   }
 
   /** A mais recente de uma ação dentro de uma sessão, ou null. */
