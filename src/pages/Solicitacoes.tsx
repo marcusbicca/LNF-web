@@ -120,25 +120,28 @@ export function Solicitacoes() {
 
     try {
       const id = novaSessaoId(config?.usuario ?? '')
-      const criada = await sol.criar({
-        acao: 'iniciar_sessao',
-        sessaoId: id,
-        payload: { IncluirPipes: incluirPipes },
-        sapUsuario: sapUsuario || undefined,
-        sapSenha: sapSenha || undefined,
-      })
-
       const t0 = Date.now()
-      const pronta = await sol.aguardar(criada.id, {
-        onTick: (s) => {
-          const seg = Math.round((Date.now() - t0) / 1000)
-          setProgresso(
-            s.status === 'pendente'
-              ? `Aguardando uma máquina pegar… (${seg}s)`
-              : `${s.executor ?? '?'} está executando… (${seg}s)`,
-          )
+      const pronta = await sol.criarEAguardar(
+        {
+          acao: 'iniciar_sessao',
+          sessaoId: id,
+          payload: { IncluirPipes: incluirPipes },
+          sapUsuario: sapUsuario || undefined,
+          sapSenha: sapSenha || undefined,
         },
-      })
+        {
+          onTick: (s) => {
+            const seg = Math.round((Date.now() - t0) / 1000)
+            setProgresso(
+              !s
+                ? `Solicitação enviada, aguardando aparecer… (${seg}s)`
+                : s.status === 'pendente'
+                  ? `Aguardando uma máquina pegar… (${seg}s)`
+                  : `${s.executor ?? '?'} está executando… (${seg}s)`,
+            )
+          },
+        },
+      )
 
       if (pronta.status !== 'concluida')
         throw new Error(pronta.erro || `A solicitação terminou como '${pronta.status}'.`)
@@ -167,6 +170,55 @@ export function Solicitacoes() {
     }
   }
 
+  // ── escotilha: pegar o catálogo de uma resposta que JÁ chegou ─────────────
+  //
+  // A resposta do 'iniciar_sessao' fica gravada na solicitação, então ela
+  // continua disponível mesmo que a espera ao vivo tenha falhado. Isto lê a
+  // última que deu certo e monta o catálogo a partir dela — o mesmo dado, só
+  // que buscado depois em vez de esperado na hora.
+  //
+  // Existe porque a espera ao vivo depende de rede, fluxo e tempo, e o
+  // catálogo não deveria depender de nada disso para chegar até a tela.
+  async function recuperarUltima() {
+    if (!sol) return
+    setErro(null)
+    setOcupado('recuperar')
+    setProgresso('Procurando a última sessão concluída…')
+
+    try {
+      const rows = await sol.listar({
+        limit: 20,
+        filtros: 'acao=eq.iniciar_sessao&status=eq.concluida',
+      })
+
+      for (const r of rows) {
+        const cat = lerCatalogo(r.resultado)
+        if (!cat) continue
+
+        setSessao({
+          id: cat.sessaoId || r.sessao_id || '',
+          executor: cat.executor || r.executor || '',
+          maquina: cat.maquina || r.maquina || '',
+          versaoCoreon: cat.versaoCoreon,
+          loginSap: cat.loginSap,
+          aberta: r.terminado_em || r.criado_em,
+        })
+        if (cat.pipes.length) setCatalogo(cat)
+        setProgresso('')
+        return
+      }
+
+      throw new Error(
+        'Nenhum iniciar_sessao concluído encontrado. Abra uma sessão primeiro.',
+      )
+    } catch (e) {
+      setErro((e as Error).message)
+      setProgresso('')
+    } finally {
+      setOcupado(null)
+    }
+  }
+
   // ── 3. enviar ──────────────────────────────────────────────────────────────
   async function enviar() {
     if (!sol || !pipe || !sessao) return
@@ -181,25 +233,28 @@ export function Solicitacoes() {
         if (v !== undefined) payload[c.nome] = v
       }
 
-      const criada = await sol.criar({
-        acao: pipe.acao,
-        payload,
-        sessaoId: sessao.id,
-        // Endereçada: a sessão está na memória DESTA máquina.
-        destinatario: sessao.executor || undefined,
-      })
-
       const t0 = Date.now()
-      const pronta = await sol.aguardar(criada.id, {
-        onTick: (s) => {
-          const seg = Math.round((Date.now() - t0) / 1000)
-          setProgresso(
-            s.status === 'pendente'
-              ? `Na fila de ${sessao.executor}… (${seg}s)`
-              : `Executando… (${seg}s)`,
-          )
+      const pronta = await sol.criarEAguardar(
+        {
+          acao: pipe.acao,
+          payload,
+          sessaoId: sessao.id,
+          // Endereçada: a sessão está na memória DESTA máquina.
+          destinatario: sessao.executor || undefined,
         },
-      })
+        {
+          onTick: (s) => {
+            const seg = Math.round((Date.now() - t0) / 1000)
+            setProgresso(
+              !s
+                ? `Solicitação enviada, aguardando aparecer… (${seg}s)`
+                : s.status === 'pendente'
+                  ? `Na fila de ${sessao.executor}… (${seg}s)`
+                  : `Executando… (${seg}s)`,
+            )
+          },
+        },
+      )
 
       setUltima(pronta)
       setProgresso('')
@@ -286,13 +341,23 @@ export function Solicitacoes() {
             senha é apagada do banco assim que uma máquina pega a solicitação.
           </p>
 
-          <button
-            onClick={abrirSessao}
-            disabled={!!ocupado}
-            className="bg-green-700 hover:bg-green-600 disabled:opacity-40 rounded px-3 py-1.5 text-sm"
-          >
-            {ocupado === 'abrir' ? 'Abrindo…' : 'Abrir sessão'}
-          </button>
+          <div className="flex flex-wrap gap-2">
+            <button
+              onClick={abrirSessao}
+              disabled={!!ocupado}
+              className="bg-green-700 hover:bg-green-600 disabled:opacity-40 rounded px-3 py-1.5 text-sm"
+            >
+              {ocupado === 'abrir' ? 'Abrindo…' : 'Abrir sessão'}
+            </button>
+            <button
+              onClick={recuperarUltima}
+              disabled={!!ocupado}
+              title="Lê o catálogo da última sessão que concluiu, sem abrir outra"
+              className="bg-zinc-800 hover:bg-zinc-700 disabled:opacity-40 rounded px-3 py-1.5 text-sm"
+            >
+              {ocupado === 'recuperar' ? 'Procurando…' : 'Recuperar última'}
+            </button>
+          </div>
         </div>
 
         {sessoes.length > 0 && (
