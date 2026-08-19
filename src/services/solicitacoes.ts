@@ -48,6 +48,8 @@ export interface Solicitacao {
   acao: string
   payload: unknown
   sessao_id: string | null
+  /** Agrupa os passos de uma sequência. null = envio avulso. */
+  lote: string | null
   sap_usuario: string | null
   tem_senha: boolean
   status: StatusSolicitacao
@@ -107,6 +109,7 @@ function toSolicitacao(r: Row): Solicitacao {
     acao: String(r.acao ?? ''),
     payload: r.payload ?? null,
     sessao_id: (r.sessao_id as string) ?? null,
+    lote: (r.lote as string) ?? null,
     sap_usuario: (r.sap_usuario as string) ?? null,
     tem_senha: r.tem_senha === true,
     status: (r.status as StatusSolicitacao) ?? 'pendente',
@@ -118,6 +121,24 @@ function toSolicitacao(r: Row): Solicitacao {
     erro: (r.erro as string) ?? null,
     updated_at: String(r.updated_at ?? ''),
   }
+}
+
+/**
+ * Um uuid v4 para agrupar as solicitações de uma sequência (coluna 'lote').
+ *
+ * crypto.randomUUID existe nos navegadores atuais, mas só em contexto seguro —
+ * e o LNF-web roda em https, então existe. O ramo de baixo é para quando não
+ * existir: o valor não precisa ser criptograficamente forte, precisa ser
+ * DIFERENTE do lote do envio ao lado, e Math.random resolve isso.
+ */
+function novoId(): string {
+  const c = globalThis.crypto as Crypto | undefined
+  if (c && typeof c.randomUUID === 'function') return c.randomUUID()
+
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (ch) => {
+    const r = (Math.random() * 16) | 0
+    return (ch === 'x' ? r : (r & 0x3) | 0x8).toString(16)
+  })
 }
 
 /**
@@ -278,12 +299,26 @@ export class SolicitacoesService {
   ): Promise<void> {
     if (!passos.length) return
 
+    // O LOTE é o que distingue uma sequência de vários envios avulsos, e a
+    // distinção decide o que acontece quando um passo falha: dentro do lote, o
+    // erro interrompe os seguintes (o 'executar' não roda se o 'set_xml_path'
+    // do mesmo envio não deu certo); fora dele, não interrompe ninguém.
+    //
+    // Antes isso era decidido pela SESSÃO, e estava errado: sessão é um
+    // endereço que dura meia hora, e nela cabem tanto os três passos de um lote
+    // quanto dez pedidos soltos ao longo da tarde. Abortar os dez porque o
+    // terceiro falhou era aplicar a regra do lote a quem não é lote — e o
+    // sintoma foi uma sessão que parou de aceitar trabalho, em silêncio, para
+    // sempre.
+    const lote = novoId()
+
     const linhas: Row[] = passos.map((p) => {
       const l: Row = {
         criado_por: this.usuario || null,
         acao: p.acao,
         payload: p.payload ?? {},
         sessao_id: sessaoId,
+        lote,
         status: 'pendente',
       }
       if (p.destinatario) l.destinatario = p.destinatario
