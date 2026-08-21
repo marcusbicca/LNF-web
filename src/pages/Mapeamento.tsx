@@ -3,6 +3,8 @@ import { useApp } from '../context/AppContext'
 import { SupabaseService } from '../services/supabase'
 import type { CadastroJson, FatorEntry, ItensJson, PedidoItem } from '../types'
 import { format, parseLenient } from '../utils/json'
+import { convToJson, reconstruirConv } from '../utils/conversao'
+import { ConversoesPendentes } from '../components/ConversoesPendentes'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Mapeamento — porta web do MapearMaterialForm do LNF-Coreon.
@@ -261,36 +263,10 @@ function conversaoRuntime(fator: number, umbsIguais: boolean, de: string, umbNf:
   return fator
 }
 
-// Reconstrói o estado de conversão (fator/de/para) a partir do que está
-// gravado no itens.json (lista vazia = sem conversão; só fator = universal;
-// com de/para = direcional).
-function reconstruirConv(conv: FatorEntry[] | undefined): {
-  fator: number
-  umbsIguais: boolean
-  de: string
-  para: string
-} {
-  if (!conv || conv.length === 0) return { fator: 1, umbsIguais: true, de: '', para: '' }
-  const c = conv[0]
-  if ((c.de && c.de !== '') || (c.para && c.para !== '')) {
-    return { fator: c.fator ?? 1, umbsIguais: false, de: c.de ?? '', para: c.para ?? '' }
-  }
-  return { fator: c.fator ?? 1, umbsIguais: true, de: '', para: '' }
-}
-
 // Procura a chave (case-insensitive) do fornecedor no itens.json.
 function acharFornecedorKey(itens: ItensJson, fornecedor: string): string | null {
   const f = fornecedor.trim().toLowerCase()
   return Object.keys(itens).find(k => k.trim().toLowerCase() === f) ?? null
-}
-
-// Serializa uma conversão no formato do itens.json (espelha ConverterConversao).
-function convToJson(de: string, para: string, fator: number): FatorEntry {
-  const o: FatorEntry = {}
-  if (de) o.de = de
-  if (para) o.para = para
-  if (fator !== 0 && fator !== 1) o.fator = fator
-  return o
 }
 
 // Aplica os vínculos no itens.json (espelha AplicarItemNoDict/UpsertItens).
@@ -865,6 +841,12 @@ export function Mapeamento() {
   if (!carregado) {
     return (
       <div className="p-4 space-y-3 max-w-2xl mx-auto">
+        {/* As conversões suspeitas chegam na MESMA porta que os casos de
+            cadastro: é a fila que esta pessoa já abre, e uma segunda tela para
+            uma segunda fila seria uma tela que ninguém lembra de visitar.
+            Fechada por padrão — quem vem mapear cadastro não vem por isto. */}
+        <ConversoesPendentes />
+
         <div className="flex items-center justify-between">
           <h2 className="font-semibold">
             {verFinalizados ? 'Casos finalizados' : 'Casos de cadastro pendentes'}
