@@ -65,3 +65,47 @@ export function escreverConv(conv: FatorEntry[] | undefined): string {
 function num(d: number): string {
   return String(Math.round(d * 1e10) / 1e10)
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// A sugestão de fator, a partir de uma NF e do saldo do pedido.
+//
+// Esta regra já existia — era o botão "Sugerir" do Mapeamento — e saiu de lá
+// pelo mesmo motivo das duas acima: a tela de conversões suspeitas precisa da
+// MESMA sugestão, e a segunda cópia já tinha nascido errada. Ela usava a razão
+// invertida (saldo ÷ NF em vez de NF ÷ saldo) e não mexia em de/para, o que
+// produzia o número certo por acaso num caso e o sentido errado no outro.
+//
+// ── as duas convenções, que não são a mesma ─────────────────────────────────
+//
+// Para JULGAR se é conversão, comparam-se duas razões no mesmo sentido:
+//   saldo ÷ qtdNF   contra   valorNF ÷ valorPedido
+// Numa conversão errada as duas dão o mesmo número — a mesma caixa contada de
+// dois jeitos.
+//
+// Para GRAVAR, o cadastro quer outra coisa: fator = qtdNF ÷ qtdPedido, com a
+// orientação base de = UMB do pedido, para = UMB da NF ("1 [pedido] = fator
+// [NF]"). Confundir uma com a outra é gravar a conversão de cabeça para baixo.
+//
+// ── por que o fator é mantido inteiro ───────────────────────────────────────
+//
+// Fração menor que 1 vira o seu inverso, e de/para trocam de lado junto — o
+// resultado é equivalente e legível. "CX>UN 12" se lê; "UN>CX 0,0833" é o mesmo
+// fato escrito de um jeito que ninguém confere de cabeça.
+// ─────────────────────────────────────────────────────────────────────────────
+export function sugerirConv(
+  qtdNf: number,
+  qtdPedido: number,
+  umbNf: string,
+  umbPedido: string,
+  universal: boolean,
+): ConvEditavel | null {
+  if (qtdNf === 0) return null
+
+  const f = qtdPedido !== 0 ? qtdNf / qtdPedido : 1
+
+  if (universal) return { fator: f, umbsIguais: true, de: '', para: '' }
+
+  return f > 0 && f < 1
+    ? { fator: 1 / f, umbsIguais: false, de: umbNf, para: umbPedido }
+    : { fator: f, umbsIguais: false, de: umbPedido, para: umbNf }
+}

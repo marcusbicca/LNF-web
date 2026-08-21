@@ -3,7 +3,7 @@ import { useApp } from '../context/AppContext'
 import { SupabaseService } from '../services/supabase'
 import type { CadastroJson, FatorEntry, ItensJson, PedidoItem } from '../types'
 import { format, parseLenient } from '../utils/json'
-import { convToJson, reconstruirConv } from '../utils/conversao'
+import { convToJson, reconstruirConv, sugerirConv } from '../utils/conversao'
 import { ConversoesPendentes } from '../components/ConversoesPendentes'
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -713,29 +713,18 @@ export function Mapeamento() {
     if (f > 0) setFator(num(1 / f))
   }
 
+  // A regra mora em utils/conversao.ts — a tela de conversões suspeitas sugere
+  // pelo MESMO caminho. Duas cópias já divergiram uma vez.
   function sugerir() {
     if (!cb1Sel || !cb2Sel) return
-    if (cb1Sel.qtdNF === 0) return
 
-    if (umbsIguais) {
-      // universal: fator = QtdNF / QtdPed
-      const f = cb2Sel.qtdPendente !== 0 ? cb1Sel.qtdNF / cb2Sel.qtdPendente : 1
-      setFator(num(f))
-      return
-    }
+    const s = sugerirConv(cb1Sel.qtdNF, cb2Sel.qtdPendente, umbNf, umbPed, umbsIguais)
+    if (!s) return
 
-    // de/para: orientação base de=UMB do pedido, para=UMB da NF →
-    // fator = QtdNF / QtdPed (1 [pedido] = fator [NF]).
-    setDe(umbPed)
-    setPara(umbNf)
-    const f = cb2Sel.qtdPendente !== 0 ? cb1Sel.qtdNF / cb2Sel.qtdPendente : 1
-    if (f > 0 && f < 1) {
-      // mantém fator inteiro: inverte + swap
-      setFator(num(1 / f))
-      setDe(umbNf)
-      setPara(umbPed)
-    } else {
-      setFator(num(f))
+    setFator(num(s.fator))
+    if (!s.umbsIguais) {
+      setDe(s.de)
+      setPara(s.para)
     }
   }
 
