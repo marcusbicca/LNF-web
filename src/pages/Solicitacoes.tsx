@@ -130,6 +130,19 @@ export function Solicitacoes() {
 
   const [incluirPipes, setIncluirPipes] = useState(true)
   const [sapUsuario, setSapUsuario] = useState('')
+
+  // ── para QUEM abrir a sessão ──────────────────────────────────────────────
+  //
+  // Vazio = a solicitação circula e o primeiro Coreon que a ler fica com ela.
+  // Serve para "quero uma máquina qualquer", que é o caso de sondar o catálogo.
+  //
+  // Preenchido = só a máquina daquele usuário Windows pega. É o caso que
+  // importa quando alguém RECLAMA de um problema: a sessão precisa cair na
+  // máquina dele, e não na primeira que estiver de olho na fila.
+  //
+  // Quem filtra é o banco, na pegar_solicitacao — aqui é só a coluna
+  // 'destinatario' da linha.
+  const [destinatario, setDestinatario] = useState('')
   const [sapSenha, setSapSenha] = useState('')
 
   const [acao, setAcao] = useState('')
@@ -207,6 +220,7 @@ export function Solicitacoes() {
           acao: 'iniciar_sessao',
           sessaoId: id,
           payload: { IncluirPipes: incluirPipes },
+          destinatario: destinatario.trim().toLowerCase() || undefined,
           sapUsuario: sapUsuario || undefined,
           sapSenha: sapSenha || undefined,
         },
@@ -217,7 +231,12 @@ export function Solicitacoes() {
               !s
                 ? `Solicitação enviada, aguardando aparecer… (${seg}s)`
                 : s.status === 'pendente'
-                  ? `Aguardando uma máquina pegar… (${seg}s)`
+                  // Com destinatário, "ninguém pegou" quase sempre quer dizer
+                  // "o Coreon daquela pessoa não está no ar" — e não "está
+                  // lento". Dizer o nome poupa a espera até o timeout.
+                  ? destinatario
+                    ? `Esperando o Coreon de ${destinatario.trim()} pegar… (${seg}s)`
+                    : `Aguardando uma máquina pegar… (${seg}s)`
                   : `${s.executor ?? '?'} está executando… (${seg}s)`,
             )
           },
@@ -534,6 +553,13 @@ export function Solicitacoes() {
             )}
           </label>
 
+          <input
+            value={destinatario}
+            onChange={(e) => setDestinatario(e.target.value)}
+            placeholder="Abrir na máquina de… (usuário Windows; vazio = a primeira que pegar)"
+            className="bg-zinc-900 border border-zinc-700 rounded px-2 py-1 text-sm w-full"
+          />
+
           <div className="grid grid-cols-2 gap-2">
             <input
               value={sapUsuario}
@@ -549,6 +575,10 @@ export function Solicitacoes() {
               className="bg-zinc-900 border border-zinc-700 rounded px-2 py-1 text-sm"
             />
           </div>
+          <p className="text-xs text-zinc-500">
+            Com um destinatário, só a máquina <em>daquele</em> usuário pega a sessão — e ela
+            fica esperando até ele abrir o Coreon. Vazio, vale a primeira que ler.
+          </p>
           <p className="text-xs text-zinc-500">
             Sem credencial, roda com o login que o operador daquela máquina já validou.
             Com credencial, o SAP é acessado em seu nome e o histórico registra você. A

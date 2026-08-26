@@ -14,7 +14,10 @@ type Modo = 'historico' | 'debug'
 
 // Colunas escalares do histórico (na ordem). jsonb (nfs/detalhe) vão só no export.
 const COLS: Array<{ campo: string; label: string }> = [
-  { campo: 'created_at', label: 'Data' },
+  // A data da AÇÃO, não a da linha. Era created_at, e com o histórico subindo
+  // em lote isso passou a ser a hora da descarga — a tabela mostraria todas as
+  // linhas do lote com o mesmo horário, e um horário que não é o de nenhuma.
+  { campo: 'data_hora_inicio', label: 'Data' },
   { campo: 'usuario', label: 'Usuário' },
   { campo: 'acao', label: 'Ação' },
   { campo: 'sucesso', label: 'OK' },
@@ -27,7 +30,11 @@ const COLS: Array<{ campo: string; label: string }> = [
 
 function fmt(campo: string, v: unknown): string {
   if (v == null) return ''
-  if (campo === 'created_at' || campo === 'updated_at') {
+  if (campo === 'created_at' || campo === 'updated_at' || campo === 'data_hora_inicio') {
+    // data_hora_inicio é ISO SEM fuso ('2026-08-26T10:00:00.000') — o
+    // JavaScript lê isso como hora LOCAL, que é exatamente o que o Coreon
+    // gravou (DateTime.Now da máquina). created_at/updated_at vêm com fuso e
+    // são convertidos.
     const d = new Date(String(v))
     return Number.isNaN(d.getTime()) ? String(v) : d.toLocaleString('pt-BR')
   }
@@ -75,8 +82,27 @@ export function Historico() {
       setBuscou(true)
       const lim = Math.max(1, Number(limite) || 200)
       try {
-        // Coluna de data por modo (historico=created_at, debug=updated_at).
-        const col = modo === 'historico' ? 'created_at' : 'updated_at'
+        // ── a data da AÇÃO, não a da linha ───────────────────────────────────
+        //
+        // Era created_at: carimbo do Supabase, quando a linha CHEGOU. Enquanto o
+        // Coreon mandava uma por vez, chegar e acontecer eram quase a mesma
+        // coisa. Deixaram de ser — o histórico agora sobe em LOTE, no ciclo de
+        // sincronismo, e o lote inteiro chega no mesmo instante. Ordenar por
+        // created_at daria a ordem da descarga e, dentro do lote, nenhuma.
+        //
+        // data_hora_inicio é gravado pelo Coreon no instante em que a ação
+        // começou. É o que se procura ao abrir esta tela.
+        //
+        // A coluna é TEXT, e ordenar texto funciona AQUI porque o formato é ISO
+        // ('yyyy-MM-ddTHH:mm:ss.fff', ver PipeServer.FmtDt), onde a ordem
+        // alfabética coincide com a cronológica. Vale enquanto todas as linhas
+        // usarem esse formato — uma gravada de outro jeito sortearia fora de
+        // lugar, calada. Converter a coluna para timestamptz resolveria de vez, e
+        // também tornaria o filtro por período uma comparação de data de verdade.
+        //
+        // O debug continua em updated_at: lá a linha é SOBRESCRITA a cada envio,
+        // então a data da linha e a do fato são a mesma.
+        const col = modo === 'historico' ? 'data_hora_inicio' : 'updated_at'
         const conds: string[] = []
         if (filtroUsuario) conds.push('usuario=eq.' + encodeURIComponent(filtroUsuario))
         if (modo === 'historico') {
@@ -89,7 +115,10 @@ export function Historico() {
         }
         if (modo === 'debug' && filtroTipo) conds.push('tipo=eq.' + encodeURIComponent(filtroTipo))
         if (dataInicio) conds.push(`${col}=gte.${dataInicio}`)
-        if (dataFim) conds.push(`${col}=lte.${dataFim}T23:59:59`)
+        // .999 e não T23:59:59 cravado: com a coluna em TEXT, a comparação é
+        // de string, e '...T23:59:59.500' é MAIOR que '...T23:59:59' — o último
+        // segundo do dia ficava de fora, calado.
+        if (dataFim) conds.push(`${col}=lte.${dataFim}T23:59:59.999`)
         const page = await svc.lerLinhas(modo, {
           order: col + '.desc',
           limit: lim,

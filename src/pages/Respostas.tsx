@@ -42,6 +42,18 @@ const STATUS_COR: Record<StatusSolicitacao, string> = {
   expirada: 'text-amber-500',
 }
 
+// ── quantas linhas buscar ───────────────────────────────────────────────────
+//
+// Era 100, fixo no código. Cem é muito mais do que se olha na prática, e cada
+// leitura custa um run do fluxo — com a auto-atualização ligada, um a cada 5
+// segundos, trazendo noventa linhas que ninguém leu.
+//
+// Os degraus são poucos de propósito: um campo livre convidaria a digitar 5000,
+// e a tela não tem paginação para sustentar isso.
+const LIMITES = [10, 25, 50, 100, 250]
+const LIMITE_PADRAO = 25
+const LIMITE_KEY = 'lnf.respostas.limite'
+
 function dt(v: string | null): string {
   if (!v) return '—'
   const d = new Date(v)
@@ -72,13 +84,34 @@ export function Respostas() {
   const [filtroStatus, setFiltroStatus] = useState<string>('')
   const [autoAtualizar, setAutoAtualizar] = useState(false)
 
+  // Guardado no localStorage porque é preferência de quem usa, não estado da
+  // tela: quem trabalha com as últimas dez não quer reescolher a cada visita.
+  // Em try/catch — navegador com armazenamento bloqueado não pode derrubar a
+  // página por causa de uma preferência.
+  const [limite, setLimite] = useState<number>(() => {
+    try {
+      const n = Number(localStorage.getItem(LIMITE_KEY))
+      return LIMITES.includes(n) ? n : LIMITE_PADRAO
+    } catch {
+      return LIMITE_PADRAO
+    }
+  })
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(LIMITE_KEY, String(limite))
+    } catch {
+      /* preferência é conforto; nunca derruba a tela */
+    }
+  }, [limite])
+
   const carregar = useCallback(async () => {
     if (!sol) return
     setCarregando(true)
     setErro(null)
     try {
       const f = filtroStatus ? `status=eq.${filtroStatus}` : undefined
-      const rows = await sol.listar({ limit: 100, filtros: f })
+      const rows = await sol.listar({ limit: limite, filtros: f })
       setLinhas(rows)
       // Mantém a seleção apontando para a versão nova da mesma linha — sem
       // isso, um refresh durante uma execução congelaria o painel no estado
@@ -89,7 +122,7 @@ export function Respostas() {
     } finally {
       setCarregando(false)
     }
-  }, [sol, filtroStatus])
+  }, [sol, filtroStatus, limite])
 
   useEffect(() => {
     void carregar()
@@ -136,6 +169,19 @@ export function Respostas() {
           <option value="expirada">expirada</option>
         </select>
 
+        <select
+          value={limite}
+          onChange={(e) => setLimite(Number(e.target.value))}
+          className="bg-zinc-900 border border-zinc-700 rounded px-2 py-1.5 text-sm"
+          title="Quantas solicitações buscar. Cada leitura custa uma chamada do fluxo."
+        >
+          {LIMITES.map((n) => (
+            <option key={n} value={n}>
+              últimas {n}
+            </option>
+          ))}
+        </select>
+
         <label className="flex items-center gap-2 text-sm text-zinc-400">
           <input
             type="checkbox"
@@ -145,7 +191,11 @@ export function Respostas() {
           Auto {emVoo ? '(a cada 5s)' : '(nada em voo)'}
         </label>
 
-        <span className="text-xs text-zinc-600 ml-auto">{linhas.length} linha(s)</span>
+        {/* Bateu no teto = provavelmente há mais. Sem este aviso, "25 linhas"
+            se lê como "só existem 25", que é a leitura errada e silenciosa. */}
+        <span className="text-xs text-zinc-600 ml-auto">
+          {linhas.length} linha(s){linhas.length === limite ? ' — no limite, pode haver mais' : ''}
+        </span>
       </div>
 
       {erro && (
