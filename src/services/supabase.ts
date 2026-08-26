@@ -637,6 +637,14 @@ export class SupabaseService {
   async removerFornecedor(nome: string): Promise<void> {
     // FK on delete cascade remove os materiais do fornecedor junto.
     await this.del('fornecedores', `nome=eq.${encodeURIComponent(nome)}`)
+
+    // ── o cascade acontece no SERVIDOR; o cache não fica sabendo ─────────────
+    //
+    // O del() invalida a tabela que ele apagou, e só ela. Mas quem apaga o
+    // fornecedor apaga os MATERIAIS dele junto, por FK — no Postgres, sem
+    // passar por aqui. Sem esta linha o cache continuava servindo os materiais
+    // de um fornecedor que não existe mais, até vencer ou a página recarregar.
+    this.invalidarCache('materiais')
   }
 
   // ── renomear fornecedor ────────────────────────────────────────────────────
@@ -663,6 +671,11 @@ export class SupabaseService {
         `nome=eq.${encodeURIComponent(antigo)}`,
         { nome: novo },
       )
+      // Mesmo caso do removerFornecedor, pelo outro lado da FK: o "on update
+      // cascade" MOVE os materiais para o nome novo, no servidor. O update()
+      // invalida só 'fornecedores', e o cache de materiais ficaria com a chave
+      // antiga — apontando para um fornecedor que já não se chama assim.
+      this.invalidarCache('materiais')
       // Só depois de o nome ter migrado é que gravamos o resto da edição —
       // assim um erro aqui deixa o fornecedor renomeado e íntegro.
       await this.upsert('fornecedores', [buildFornRow(novo, data)], 'nome')
