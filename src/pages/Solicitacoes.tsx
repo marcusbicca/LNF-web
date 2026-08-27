@@ -149,6 +149,21 @@ export function Solicitacoes() {
   const [valores, setValores] = useState<Record<string, string>>({})
   const [marcados, setMarcados] = useState<Record<string, boolean>>({})
 
+  // ── modo JSON cru ─────────────────────────────────────────────────────────
+  //
+  // O formulário monta o payload a partir dos campos que o catálogo inferiu, e
+  // cada campo é uma caixa de TEXTO. Isso cobre bem o caso comum e não cobre de
+  // jeito nenhum o que tem LISTA dentro: o read_table pede Campos, Filtro e
+  // CamposChave como arrays, e não há texto que vire array sem alguém inventar
+  // uma sintaxe.
+  //
+  // Em vez de inventar, aceita-se o JSON como ele é. É também o formato em que
+  // um payload chega pronto de qualquer lugar — de uma conversa, de um log, de
+  // uma linha copiada da resposta anterior — e ter de desmontá-lo em caixinhas
+  // para a tela remontar é trabalho que não produz nada.
+  const [modoJson, setModoJson] = useState(false)
+  const [textoJson, setTextoJson] = useState('')
+
   // Fila local: os passos que o usuário montou antes de enviar. Só vira
   // solicitação no banco quando ele manda — assim dá para revisar a sequência
   // inteira antes de disparar.
@@ -164,6 +179,48 @@ export function Solicitacoes() {
     () => catalogo?.pipes.find((p) => p.acao === acao) ?? null,
     [catalogo, acao],
   )
+
+  // O JSON digitado, decidido UMA vez: ou o objeto, ou o motivo de não ser.
+  //
+  // Objeto e não array, e não escalar: o payload de uma pipe é sempre um
+  // objeto de campos. Aceitar `[1,2]` aqui só adiaria o erro para o Coreon,
+  // longe de quem pode consertar.
+  const json = useMemo((): { obj: Record<string, unknown> | null; erro: string } => {
+    const t = textoJson.trim()
+    if (!t) return { obj: null, erro: '' }
+    try {
+      const o = JSON.parse(t)
+      if (o === null || typeof o !== 'object' || Array.isArray(o))
+        return { obj: null, erro: 'O payload tem que ser um objeto { ... }.' }
+      return { obj: o as Record<string, unknown>, erro: '' }
+    } catch (e) {
+      return { obj: null, erro: (e as Error).message }
+    }
+  }, [textoJson])
+
+  // ── quem manda no nome da ação ────────────────────────────────────────────
+  //
+  // No modo JSON, o "Acao" de dentro do texto vence a lista de cima. É o que
+  // torna o colar-e-enviar possível: o JSON que se recebe pronto já traz a
+  // ação, e obrigar a selecioná-la de novo na lista seria pedir para digitar
+  // duas vezes a mesma coisa — com a chance de as duas discordarem.
+  //
+  // Não há perda: o Coreon sobrescreve payload["Acao"] com a ação da COLUNA
+  // (SolicitacaoRemotaService), então as duas terminam iguais de qualquer jeito.
+  // O que a tela faz é escolher qual delas vira a coluna.
+  const acaoEfetiva = useMemo(() => {
+    if (!modoJson) return pipe?.acao ?? ''
+    const a = json.obj?.['Acao'] ?? json.obj?.['acao']
+    return typeof a === 'string' && a.trim() ? a.trim() : acao
+  }, [modoJson, json.obj, pipe, acao])
+
+  // Dá para enviar? No modo JSON não se exige pipe do catálogo: a ação pode
+  // existir num Coreon mais novo que o catálogo carregado, e recusar aqui
+  // transformaria a tela num obstáculo justamente no caso em que ela é a única
+  // saída.
+  const prontoParaEnviar = modoJson
+    ? !!json.obj && !json.erro && !!acaoEfetiva
+    : !!pipe
 
   // O serviço já corta pelo TTL na hora da consulta, mas a lista não pode
   // congelar no instante do fetch: uma sessão que estava a 29 min quando a
@@ -338,6 +395,8 @@ export function Solicitacoes() {
   // Monta o payload do formulário atual. Compartilhado por enviar e enfileirar,
   // para os dois nunca divergirem no tratamento de tipo.
   function payloadAtual(): Record<string, unknown> {
+    if (modoJson) return json.obj ?? {}
+
     const o: Record<string, unknown> = {}
     if (!pipe) return o
     for (const c of pipe.campos) {
@@ -350,6 +409,9 @@ export function Solicitacoes() {
   function limparFormulario() {
     setValores({})
     setMarcados({})
+    // O texto do JSON NÃO é limpo junto. Quem monta um payload cru quase
+    // sempre vai mandar o próximo parecido com este — mudar uma tabela, um
+    // filtro — e apagá-lo transformaria cada envio numa nova digitação.
   }
 
   /**
@@ -364,8 +426,8 @@ export function Solicitacoes() {
 
   // ── sequência: enfileira aqui, dispara tudo de uma vez ────────────────────
   function enfileirar() {
-    if (!pipe) return
-    setFila((f) => [...f, { acao: pipe.acao, payload: payloadAtual() }])
+    if (!prontoParaEnviar || !acaoEfetiva) return
+    setFila((f) => [...f, { acao: acaoEfetiva, payload: payloadAtual() }])
     limparFormulario()
   }
 
@@ -404,7 +466,7 @@ export function Solicitacoes() {
 
   // ── universal: vale para todos, fica em pé ────────────────────────────────
   async function enviarUniversal() {
-    if (!sol || !pipe) return
+    if (!sol || !prontoParaEnviar || !acaoEfetiva) return
     setErro(null)
     setOcupado('universal')
     setProgresso('Criando solicitação universal…')
@@ -413,7 +475,7 @@ export function Solicitacoes() {
       // Sem sessão e sem destinatário de propósito: ela roda em TODAS as
       // máquinas, uma vez em cada. E não se espera por ela aqui — ela termina
       // quando você a encerra, não quando alguém executa.
-      await sol.criar({ acao: pipe.acao, payload: payloadAtual(), universal: true })
+      await sol.criar({ acao: acaoEfetiva, payload: payloadAtual(), universal: true })
       limparFormulario()
       setProgresso('')
       void carregarUniversais()
@@ -441,7 +503,7 @@ export function Solicitacoes() {
 
   // ── 3. enviar ──────────────────────────────────────────────────────────────
   async function enviar() {
-    if (!sol || !pipe || !sessao) return
+    if (!sol || !prontoParaEnviar || !acaoEfetiva || !sessao) return
     setErro(null)
     setOcupado('enviar')
     setProgresso('Criando solicitação…')
@@ -452,7 +514,7 @@ export function Solicitacoes() {
       const t0 = Date.now()
       const pronta = await sol.criarEAguardar(
         {
-          acao: pipe.acao,
+          acao: acaoEfetiva,
           payload,
           sessaoId: sessao.id,
           // Endereçada: a sessão está na memória DESTA máquina.
@@ -644,14 +706,22 @@ export function Solicitacoes() {
       <section className="border border-zinc-800 rounded p-4 space-y-3">
         <h2 className="font-semibold">2. Ação</h2>
 
-        {!catalogo ? (
+        {/*
+          O catálogo governa a LISTA, não a seção inteira. Ele era a condição de
+          tudo aqui, e isso deixava o modo JSON — justamente o que não depende
+          dele — inalcançável para quem abriu a sessão sem carregá-lo. A tela
+          virava obstáculo no caso em que era a única saída.
+        */}
+        {!catalogo && (
           <p className="text-sm text-zinc-400">
-            Abra uma sessão com <b>Carregar catálogo de pipes</b> marcado para ver as
-            ações disponíveis.
+            Abra uma sessão com <b>Carregar catálogo de pipes</b> marcado para ver a
+            lista de ações — ou monte o payload como JSON abaixo, que não precisa
+            dela.
           </p>
-        ) : (
-          <>
-            <select
+        )}
+
+        <>
+            {catalogo && <select
               value={acao}
               onChange={(e) => {
                 setAcao(e.target.value)
@@ -668,7 +738,7 @@ export function Solicitacoes() {
                   {p.campos.length ? ` (${p.campos.length})` : ''}
                 </option>
               ))}
-            </select>
+            </select>}
 
             {pipe && pipe.origem === 'inferido' && (
               <p className="text-xs text-amber-500">
@@ -680,21 +750,67 @@ export function Solicitacoes() {
               <p className="text-xs text-zinc-500">Esta ação não recebe campos.</p>
             )}
 
-            {pipe?.campos.map((c) => (
-              <Campo
-                key={c.nome}
-                nome={c.nome}
-                tipo={c.tipo}
-                valor={valores[c.nome] ?? ''}
-                marcado={marcados[c.nome] ?? false}
-                onTexto={(v) => setValores((o) => ({ ...o, [c.nome]: v }))}
-                onMarcar={(v) => setMarcados((o) => ({ ...o, [c.nome]: v }))}
+            <label className="flex items-center gap-2 text-xs text-zinc-400">
+              <input
+                type="checkbox"
+                checked={modoJson}
+                onChange={(e) => setModoJson(e.target.checked)}
               />
-            ))}
+              montar o payload como JSON
+            </label>
+
+            {modoJson ? (
+              <>
+                <textarea
+                  value={textoJson}
+                  onChange={(e) => setTextoJson(e.target.value)}
+                  spellCheck={false}
+                  rows={9}
+                  placeholder={
+                    '{"Acao":"read_table","Custom":true,"Tabela":"/TCNH/T_HD",\n' +
+                    ' "Campos":["CHNFE","NNF","CNPJ_EMIT","DHEMI"],\n' +
+                    ' "Filtro":["NNF = \'000123456\'"],\n' +
+                    ' "CamposChave":["CHNFE"]}'
+                  }
+                  className="w-full bg-zinc-900 border border-zinc-700 rounded px-2 py-1.5 text-xs font-mono"
+                />
+
+                {json.erro && <p className="text-xs text-red-400 font-mono">{json.erro}</p>}
+
+                {json.obj && !json.erro && (
+                  <p className="text-xs text-zinc-500">
+                    Ação: <span className="font-mono text-zinc-300">{acaoEfetiva || '—'}</span>
+                    {' · '}
+                    {Object.keys(json.obj).filter((k) => k !== 'Acao' && k !== 'acao').length} campo(s)
+                    {!acaoEfetiva && ' — falta "Acao" no JSON, ou escolha uma na lista.'}
+                  </p>
+                )}
+
+                <p className="text-xs text-zinc-600">
+                  O <span className="font-mono">Acao</span> de dentro do JSON vence a lista
+                  acima. Serve para o que o formulário não monta — listas, como o{' '}
+                  <span className="font-mono">Filtro</span> do{' '}
+                  <span className="font-mono">read_table</span> — e para colar um payload
+                  que já veio pronto.
+                </p>
+              </>
+            ) : (
+              pipe?.campos.map((c) => (
+                <Campo
+                  key={c.nome}
+                  nome={c.nome}
+                  tipo={c.tipo}
+                  valor={valores[c.nome] ?? ''}
+                  marcado={marcados[c.nome] ?? false}
+                  onTexto={(v) => setValores((o) => ({ ...o, [c.nome]: v }))}
+                  onMarcar={(v) => setMarcados((o) => ({ ...o, [c.nome]: v }))}
+                />
+              ))
+            )}
 
             <button
               onClick={enviar}
-              disabled={!!ocupado || !pipe || !sessao}
+              disabled={!!ocupado || !prontoParaEnviar || !sessao}
               className="bg-green-700 hover:bg-green-600 disabled:opacity-40 rounded px-3 py-1.5 text-sm"
             >
               {ocupado === 'enviar' ? 'Enviando…' : 'Enviar agora'}
@@ -702,7 +818,7 @@ export function Solicitacoes() {
 
             <button
               onClick={enfileirar}
-              disabled={!!ocupado || !pipe}
+              disabled={!!ocupado || !prontoParaEnviar}
               title="Acrescenta este passo à sequência, sem enviar ainda"
               className="ml-2 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-40 rounded px-3 py-1.5 text-sm"
             >
@@ -711,18 +827,17 @@ export function Solicitacoes() {
 
             <button
               onClick={enviarUniversal}
-              disabled={!!ocupado || !pipe}
+              disabled={!!ocupado || !prontoParaEnviar}
               title="Vale para TODOS os usuários e fica em pé até você encerrar"
               className="ml-2 bg-amber-800 hover:bg-amber-700 disabled:opacity-40 rounded px-3 py-1.5 text-sm"
             >
               {ocupado === 'universal' ? 'Criando…' : 'Enviar a todos'}
             </button>
 
-            {!sessao && pipe && (
+            {!sessao && prontoParaEnviar && (
               <p className="text-xs text-amber-500">Abra ou escolha uma sessão primeiro.</p>
             )}
-          </>
-        )}
+        </>
       </section>
 
       {/* ── sequência montada ──────────────────────────────────────────────── */}
