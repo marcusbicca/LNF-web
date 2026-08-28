@@ -1,6 +1,7 @@
 import { useCallback, useMemo, useState } from 'react'
 import { useApp } from '../context/AppContext'
 import { SupabaseService } from '../services/supabase'
+import { LogViewer } from '../components/LogViewer'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Histórico / Debug — dois modos na mesma janela.
@@ -245,8 +246,10 @@ export function Historico() {
     )
   }
 
+  // Log é linha comprida: a mesma largura da tabela de histórico faria a
+  // mensagem quebrar em três, e ler log quebrado é pior que não ler.
   return (
-    <div className="p-4 space-y-3 max-w-5xl mx-auto">
+    <div className={`p-4 space-y-3 mx-auto ${modo === 'debug' ? 'max-w-7xl' : 'max-w-5xl'}`}>
       {/* Seletor de modo */}
       <div className="inline-flex rounded-lg border border-zinc-700 overflow-hidden text-sm">
         {(['historico', 'debug'] as Modo[]).map(m => (
@@ -488,9 +491,12 @@ export function Historico() {
                         Baixar .txt
                       </button>
                     </div>
-                    <pre className="max-h-96 overflow-auto bg-zinc-950 border border-zinc-800 rounded-lg p-3 text-xs text-zinc-300 whitespace-pre-wrap break-words">
-                      {conteudo || '(vazio)'}
-                    </pre>
+                    {/* O <pre> cru virou tela navegável: filtro por nível,
+                        etiqueta, módulo e função, com cor estável por etiqueta.
+                        Conteúdo fora do formato do LogService (o trace do NCo,
+                        por exemplo) o próprio LogViewer devolve como texto
+                        cru — ver o comentário dele. */}
+                    <LogViewer conteudo={conteudo} />
                   </div>
                 )}
               </div>
