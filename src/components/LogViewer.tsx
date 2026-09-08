@@ -200,6 +200,9 @@ export function LogViewer({ conteudo }: { conteudo: string }) {
   const [funcoes, setFuncoes] = useState<Set<string>>(new Set())
   const [mostrarExtras, setMostrarExtras] = useState(true)
   const [expandido, setExpandido] = useState<Set<number>>(new Set())
+  // Texto, e não número: o campo precisa poder ficar VAZIO enquanto se digita,
+  // e um estado numérico transforma "" em 0 a cada tecla.
+  const [contexto, setContexto] = useState('')
 
   // As opções saem do conteúdo, ordenadas por frequência: a etiqueta que
   // aparece 300 vezes é a que se quer desligar primeiro para enxergar o resto.
@@ -220,17 +223,54 @@ export function LogViewer({ conteudo }: { conteudo: string }) {
   // Função é a lista mais longa; sem um teto ela vira uma parede de fichas.
   const optFuncoes = useMemo(() => contar(r => r.funcao).slice(0, 40), [registros])
 
+  // ── contexto: N linhas em volta de cada acerto ────────────────────────────
+  //
+  // Filtrar por ERROR mostra o erro e esconde o que estava acontecendo em
+  // volta — que costuma ser onde está a explicação. Com N preenchido, cada
+  // linha que passou no filtro traz N vizinhas de cada lado.
+  //
+  // Vizinhança é do LOG, não do resultado: as N linhas contadas são as que
+  // estavam ali no arquivo, inclusive as que o filtro rejeitou. Contar sobre o
+  // que sobrou do filtro devolveria "as N linhas filtradas mais próximas", que
+  // não é vizinhança de nada.
+  //
+  // Acertos PRÓXIMOS não duplicam nem se atropelam: o que se marca é um
+  // conjunto de índices. Dois erros a três linhas um do outro, com N=5, viram
+  // um bloco contínuo — cada linha aparece uma vez, na ordem do arquivo. Era a
+  // preocupação certa, e é o motivo de isto ser um Set e não uma concatenação
+  // de fatias.
   const filtrados = useMemo(() => {
     const q = busca.trim().toLowerCase()
-    return registros.filter(r => {
+    const passa = (r: Registro) => {
       if (niveis.size && !niveis.has(r.nivel)) return false
       if (tags.size && !tags.has(r.tag)) return false
       if (modulos.size && !modulos.has(r.modulo)) return false
       if (funcoes.size && !funcoes.has(r.funcao)) return false
       if (q && !r.busca.includes(q)) return false
       return true
-    })
-  }, [registros, busca, niveis, tags, modulos, funcoes])
+    }
+
+    const n = Math.max(0, Math.min(Number(contexto) || 0, 50))
+    const temFiltroAtivo =
+      !!q || niveis.size > 0 || tags.size > 0 || modulos.size > 0 || funcoes.size > 0
+
+    // Sem filtro nenhum, contexto não quer dizer nada: já está tudo na tela.
+    if (n === 0 || !temFiltroAtivo) {
+      return registros.filter(passa).map(r => ({ r, acerto: true }))
+    }
+
+    const manter = new Set<number>()
+    for (let i = 0; i < registros.length; i++) {
+      if (!passa(registros[i])) continue
+      for (let j = Math.max(0, i - n); j <= Math.min(registros.length - 1, i + n); j++)
+        manter.add(j)
+    }
+
+    return registros
+      .map((r, i) => ({ r, i }))
+      .filter(({ i }) => manter.has(i))
+      .map(({ r }) => ({ r, acerto: passa(r) }))
+  }, [registros, busca, niveis, tags, modulos, funcoes, contexto])
 
   function alternar(set: Set<string>, aplicar: (s: Set<string>) => void, v: string) {
     const novo = new Set(set)
@@ -248,6 +288,7 @@ export function LogViewer({ conteudo }: { conteudo: string }) {
   }
 
   const temFiltro = !!busca || niveis.size > 0 || tags.size > 0 || modulos.size > 0 || funcoes.size > 0
+  const acertos = useMemo(() => filtrados.filter(f => f.acerto).length, [filtrados])
 
   // Sem nenhuma linha reconhecida, o formato não é o do LogService (um trace do
   // NCo, por exemplo). Mostrar o texto cru é melhor que mostrar uma tela vazia
@@ -285,6 +326,17 @@ export function LogViewer({ conteudo }: { conteudo: string }) {
             />
             detalhes das linhas
           </label>
+          <label className="flex items-center gap-1.5 text-[11px] text-zinc-400 whitespace-nowrap"
+                 title="Linhas do log mostradas antes e depois de cada linha que passou no filtro. Vazio = só as filtradas.">
+            contexto ±
+            <input
+              value={contexto}
+              onChange={e => setContexto(e.target.value.replace(/\D/g, '').slice(0, 2))}
+              placeholder="0"
+              inputMode="numeric"
+              className="w-10 bg-zinc-900 border border-zinc-700 rounded px-1 py-1 text-xs text-center focus:outline-none focus:border-green-500"
+            />
+          </label>
           {temFiltro && (
             <button
               onClick={limpar}
@@ -307,12 +359,13 @@ export function LogViewer({ conteudo }: { conteudo: string }) {
         <p className="text-[11px] text-zinc-500">
           {filtrados.length === registros.length
             ? `${registros.length} linha(s).`
-            : `${filtrados.length} de ${registros.length} linha(s).`}
+            : `${filtrados.length} de ${registros.length} linha(s)` +
+              (acertos < filtrados.length ? ` — ${acertos} no filtro, o resto é contexto.` : '.')}
         </p>
       </div>
 
       <div className="max-h-[32rem] overflow-auto bg-zinc-950 border border-zinc-800 rounded-lg divide-y divide-zinc-900">
-        {filtrados.map(r => {
+        {filtrados.map(({ r, acerto }) => {
           const aberto = expandido.has(r.id)
           // Um despejo de RFC tem dezenas de linhas. Mostrar as primeiras dá o
           // contexto sem que UM registro empurre todo o resto para fora da tela.
@@ -320,7 +373,15 @@ export function LogViewer({ conteudo }: { conteudo: string }) {
           const extras = mostrarExtras ? r.extras.slice(0, limite) : []
           const sobraram = mostrarExtras ? r.extras.length - extras.length : 0
           return (
-            <div key={r.id} className="px-2 py-1 font-mono text-[11px] leading-relaxed hover:bg-zinc-900/60">
+            // Linha de CONTEXTO fica apagada. Sem essa diferença o resultado
+            // vira uma parede em que não se distingue o que casou com o filtro
+            // do que veio junto — e aí o contexto atrapalha em vez de ajudar.
+            <div
+              key={r.id}
+              className={`px-2 py-1 font-mono text-[11px] leading-relaxed hover:bg-zinc-900/60 ${
+                acerto ? '' : 'opacity-45'
+              }`}
+            >
               <div className="flex flex-wrap items-baseline gap-1.5">
                 <span className="text-zinc-600" title={r.dataHora}>{r.hora}</span>
                 <span className={`px-1 rounded border ${corNivel(r.nivel)}`}>{r.nivel}</span>

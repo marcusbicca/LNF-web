@@ -20,6 +20,13 @@ export interface FatorEntry {
   de?: string
   para?: string
   fator?: number
+
+  // Match por PREFIXO da UMB do pedido ("CX*"). Nenhuma tela daqui escreve
+  // isto, mas o itens.json pode ter — de cadastro antigo ou feito à mão — e o
+  // ExecutarService o respeita. Está declarado para que a edição de uma
+  // conversão PRESERVE o campo em vez de apagá-lo em silêncio: a conversão
+  // continuaria na lista, com a mesma aparência, e deixaria de casar.
+  padraoOrigem?: string
 }
 
 // ── Cadastro JSON (output do LNF-Coreon) ────────────────────────────────────
