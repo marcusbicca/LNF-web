@@ -2,7 +2,16 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useApp } from '../context/AppContext'
 import { SupabaseService } from '../services/supabase'
 import type { FatorEntry, ItensJson } from '../types'
-import { convToJson, escreverConv, reconstruirConv, sugerirConv } from '../utils/conversao'
+import {
+  convVazia,
+  convsToJson,
+  escreverConv,
+  explicarMotivo,
+  reconstruirConvs,
+  resolverConv,
+  sugerirConv,
+  type ConvEditavel,
+} from '../utils/conversao'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ConversoesPendentes — os materiais que o Executar marcou como suspeitos de
@@ -220,11 +229,24 @@ export function ConversoesPendentes() {
   const [aberto, setAberto] = useState(false)
   const [selId, setSelId] = useState<string | null>(null)
 
-  // Edição da conversão do caso selecionado.
-  const [de, setDe] = useState('')
-  const [para, setPara] = useState('')
-  const [fator, setFator] = useState('1')
-  const [universal, setUniversal] = useState(false)
+  // ── TODAS as conversões da referência, e não só a primeira ────────────────
+  //
+  // Era um único trio de/para/fator. A referência, porém, guarda uma LISTA — o
+  // ExecutarService percorre e usa a primeira que casa com as unidades da nota.
+  // Editando só a primeira e gravando uma lista de um elemento, corrigir a
+  // conversão de caixa APAGAVA a de caixote, sem aviso e sem aparecer no diff.
+  //
+  // Agora a lista inteira entra na tela e a lista inteira sai dela.
+  const [convs, setConvs] = useState<ConvEditavel[]>([])
+
+  // A simulação. Nasce com os números da NF que gerou o caso e é editável: a
+  // pergunta que se faz aqui não é só "o que aconteceu naquela nota", é "e se
+  // fosse outra quantidade, este cadastro aguenta?".
+  const [simQtd, setSimQtd] = useState('')
+  const [simValorNf, setSimValorNf] = useState('')
+  const [simValorPed, setSimValorPed] = useState('')
+  const [simUmbNf, setSimUmbNf] = useState('')
+  const [simUmbPed, setSimUmbPed] = useState('')
 
   // Edição da UmbMigo (casos tipo='umb_migo'). Separada do fator de propósito:
   // são duas correções diferentes no mesmo material, e um campo só faria uma
@@ -289,14 +311,28 @@ export function ConversoesPendentes() {
     }
   }, [sel, itens])
 
-  // Ao trocar de caso, o formulário passa a mostrar o que está cadastrado.
+  // Ao trocar de caso, o formulário passa a mostrar o que está cadastrado —
+  // TODAS as conversões da referência, na ordem em que estão gravadas. A ordem
+  // não é enfeite: é ela que decide qual vale (ver resolverConv).
   useEffect(() => {
-    const r = reconstruirConv(cadastro?.atual as FatorEntry[] | undefined)
-    setDe(r.de)
-    setPara(r.para)
-    setFator(String(r.fator))
-    setUniversal(r.umbsIguais)
+    setConvs(reconstruirConvs(cadastro?.atual as FatorEntry[] | undefined))
   }, [cadastro?.atual, selId])
+
+  // A simulação começa nos números da nota que gerou o caso. Semeada por CASO
+  // (e não a cada mudança do cadastro) pelo mesmo motivo da UmbMigo logo abaixo:
+  // gravar uma conversão não pode apagar o cenário que a pessoa estava testando.
+  const semeadoSim = useRef<string | null>(null)
+  useEffect(() => {
+    if (selId == null || !sel) { semeadoSim.current = null; return }
+    if (semeadoSim.current === selId) return
+    semeadoSim.current = selId
+
+    setSimQtd(String(sel.qtdNf))
+    setSimValorNf(String(sel.valorNf))
+    setSimValorPed(String(sel.valorPedido))
+    setSimUmbNf(sel.umbNf)
+    setSimUmbPed(sel.umbPedido)
+  }, [selId, sel])
 
   // ── a UmbMigo escolhida sobrevive a gravar a conversão ───────────────────
   //
@@ -326,11 +362,14 @@ export function ConversoesPendentes() {
   //
   // Isso é um acidente caro e silencioso: lançar 12 CX onde eram 12 UN. Então a
   // tela pergunta antes, em vez de deixar descobrir depois.
+  // Olha o que está NA TELA, não o que está gravado: quem acabou de digitar a
+  // conversão que dá fator à UmbMigo precisa ver o aviso sumir na hora, e não
+  // depois de gravar. Ler do cadastro fazia a tela avisar sobre um estado que a
+  // pessoa já tinha corrigido na frente dela.
   const avisoUmbMigo = useMemo(() => {
     const u = umbMigo.trim()
     if (!u) return ''
 
-    const convs = (cadastro?.atual ?? []) as FatorEntry[]
     const liga = convs.some(
       c =>
         (c.de ?? '').trim().toLowerCase() === u.toLowerCase() ||
@@ -339,7 +378,37 @@ export function ConversoesPendentes() {
     if (liga) return ''
 
     return `Nenhuma conversão desta referência cita "${u}". A unidade vai mudar, mas a QUANTIDADE não será convertida — cadastre a conversão junto, ou o MIGO recebe o número que já estava.`
-  }, [umbMigo, cadastro?.atual])
+  }, [umbMigo, convs])
+
+  // ── a simulação ────────────────────────────────────────────────────────────
+  //
+  // Duas perguntas de uma vez: QUAL conversão o Coreon vai escolher para estas
+  // unidades, e o que sai dela. A escolha é o que faltava — a tela mostrava um
+  // fator sem dizer se era aquele que ia valer, e com mais de uma conversão na
+  // referência isso é adivinhação.
+  //
+  // As contas são as do ExecutarService, e as mesmas do painel do mapeamento:
+  //   qtdSAP     = qtd da NF ÷ conversao
+  //   valor conv = valor UN da NF × conversao
+  //   diverge    = |valor conv − valor do pedido| × qtdSAP  >  tolerância
+  const sim = useMemo(() => {
+    const qtd = Number(String(simQtd).replace(',', '.'))
+    const vNf = Number(String(simValorNf).replace(',', '.'))
+    const vPed = Number(String(simValorPed).replace(',', '.'))
+    if (!Number.isFinite(qtd)) return null
+
+    const venc = resolverConv(convs, simUmbNf, simUmbPed)
+    const conversao = venc ? venc.conversao : 1
+
+    const qtdSap = conversao !== 0 ? qtd / conversao : qtd
+    const valorConv = (Number.isFinite(vNf) ? vNf : 0) * conversao
+    const dif = Math.abs((valorConv - (Number.isFinite(vPed) ? vPed : 0)) * qtdSap)
+
+    // A mesma tolerância por item que o Executar usa para bloquear (TolValorItem
+    // padrão). Ela vem da empresa do centro e pode ser outra em outra régua —
+    // por isso o rótulo na tela diz "referência", e não "regra".
+    return { venc, conversao, qtdSap, valorConv, dif, diverge: dif > 0.5 }
+  }, [convs, simQtd, simValorNf, simValorPed, simUmbNf, simUmbPed])
 
   // Preenche fator e unidades pela MESMA regra do "Sugerir" do mapeamento.
   //
@@ -348,16 +417,57 @@ export function ConversoesPendentes() {
   // diagnóstico (saldo ÷ NF, para comparar com a razão dos valores); este é o
   // fator do CADASTRO (NF ÷ saldo, com de/para orientados). Foi confundir os
   // dois que fez a primeira versão desta tela sugerir o sentido invertido.
-  function sugerir() {
+  function sugerir(i: number) {
     if (!sel) return
-    const s = sugerirConv(sel.qtdNf, sel.qtdSaldo, sel.umbNf, sel.umbPedido, universal)
+    const alvo = convs[i]
+    if (!alvo) return
+
+    const s = sugerirConv(sel.qtdNf, sel.qtdSaldo, sel.umbNf, sel.umbPedido, alvo.umbsIguais)
     if (!s) return
 
-    setFator(String(Math.round(s.fator * 1e6) / 1e6))
-    if (!s.umbsIguais) {
-      setDe(s.de)
-      setPara(s.para)
-    }
+    mexer(i, {
+      fator: Math.round(s.fator * 1e6) / 1e6,
+      ...(s.umbsIguais ? {} : { de: s.de, para: s.para }),
+    })
+  }
+
+  // ── mexer numa linha da lista ─────────────────────────────────────────────
+  //
+  // Sempre por CÓPIA, nunca alterando o objeto no lugar: o React compara por
+  // identidade, e mudar o item dentro do array deixaria a tela mostrando o
+  // valor velho até alguma outra coisa forçar o redesenho.
+  function mexer(i: number, campos: Partial<ConvEditavel>) {
+    setConvs(prev => prev.map((c, k) => (k === i ? { ...c, ...campos } : c)))
+  }
+
+  function adicionar() {
+    setConvs(prev => [...prev, convVazia()])
+  }
+
+  function remover(i: number) {
+    setConvs(prev => prev.filter((_, k) => k !== i))
+  }
+
+  // A ORDEM decide qual conversão vale — é a primeira que casa que ganha. Então
+  // reordenar não é estética: é a forma de dizer "esta tem precedência sobre
+  // aquela" quando as duas poderiam casar (uma universal antes de uma
+  // direcional, por exemplo, faz a direcional nunca ser alcançada).
+  function subir(i: number) {
+    if (i <= 0) return
+    setConvs(prev => {
+      const n = [...prev]
+      ;[n[i - 1], n[i]] = [n[i], n[i - 1]]
+      return n
+    })
+  }
+
+  // Inverte o sentido: troca de/para e o fator vira o seu inverso. O fato
+  // descrito é o mesmo — "CX>UN 12" e "UN>CX 0,0833" —, mas só o primeiro se
+  // confere de cabeça.
+  function inverter(i: number) {
+    const c = convs[i]
+    if (!c || c.umbsIguais) return
+    mexer(i, { de: c.para, para: c.de, fator: c.fator > 0 ? 1 / c.fator : c.fator })
   }
 
   async function marcar(novoStatus: 'corrigida' | 'ignorada') {
@@ -395,14 +505,20 @@ export function ConversoesPendentes() {
     if (!sel || !itens || !cadastro?.existe || !cadastro.kForn || !cadastro.kCod) return
     setStatus(null)
 
-    const f = Number(String(fator).replace(',', '.'))
-    if (!Number.isFinite(f) || f <= 0) {
-      setStatus('❌ Fator tem que ser um número maior que zero.')
-      return
-    }
-    if (!universal && (!de.trim() || !para.trim())) {
-      setStatus('❌ Conversão direcional precisa das duas unidades.')
-      return
+    // Recusa ANTES de gravar, e apontando a linha: uma lista com cinco
+    // conversões e uma inválida precisa dizer QUAL, senão a pessoa confere as
+    // cinco. O silêncio aqui seria pior que o erro — o convsToJson descartaria
+    // a linha ruim e gravaria as outras, e ninguém saberia que faltou uma.
+    for (let i = 0; i < convs.length; i++) {
+      const c = convs[i]
+      if (!Number.isFinite(c.fator) || c.fator <= 0) {
+        setStatus(`❌ Conversão ${i + 1}: fator tem que ser um número maior que zero.`)
+        return
+      }
+      if (!c.umbsIguais && (!c.de.trim() || !c.para.trim())) {
+        setStatus(`❌ Conversão ${i + 1}: direcional precisa das duas unidades.`)
+        return
+      }
     }
 
     try {
@@ -413,10 +529,14 @@ export function ConversoesPendentes() {
       // ainda não existe é que a grafia da NF vira chave nova.
       const alvo = cadastro.kRef ?? sel.referencia
       item.referencias = item.referencias ?? {}
-      item.referencias[alvo] =
-        f === 1 && universal ? [] : [convToJson(universal ? '' : de.trim(), universal ? '' : para.trim(), f)]
 
-      await gravarItens(novo, `conversão de ${sel.fornecedor}/${sel.codigo} (${alvo})`)
+      // A LISTA INTEIRA, e não uma conversão só. Substituir continua sendo a
+      // operação certa — mas agora o que substitui já contém tudo o que havia,
+      // porque tudo o que havia entrou na tela. Era essa a metade que faltava:
+      // gravar uma lista de um elemento apagava as demais.
+      item.referencias[alvo] = convsToJson(convs)
+
+      await gravarItens(novo, `conversões de ${sel.fornecedor}/${sel.codigo} (${alvo})`)
 
       if (!encerrar) {
         setStatus('✅ Conversão gravada. O caso segue aberto — grave a UmbMigo para encerrar.')
@@ -763,46 +883,198 @@ export function ConversoesPendentes() {
                       : `Corrigir ${cadastro.kRef ?? sel.referencia}`}
                   </div>
 
-                  <label className="flex items-center gap-2 text-zinc-400">
-                    <input
-                      type="checkbox"
-                      checked={universal}
-                      onChange={e => setUniversal(e.target.checked)}
-                    />
-                    universal (vale independente das UMBs)
-                  </label>
-
-                  {!universal && (
-                    <div className="flex gap-2">
-                      <input
-                        value={de}
-                        onChange={e => setDe(e.target.value)}
-                        placeholder="de (ex. CX)"
-                        className="w-24 bg-zinc-900 border border-zinc-800 rounded px-2 py-1 font-mono"
-                      />
-                      <input
-                        value={para}
-                        onChange={e => setPara(e.target.value)}
-                        placeholder="para (ex. UN)"
-                        className="w-24 bg-zinc-900 border border-zinc-800 rounded px-2 py-1 font-mono"
-                      />
-                    </div>
+                  {/* ── a lista inteira, editável ────────────────────────
+                      A referência guarda uma LISTA e o Coreon usa a PRIMEIRA
+                      que casa. Por isso todas aparecem, na ordem gravada, com
+                      a vencedora marcada: sem isso, "por que ele usou aquela
+                      conversão?" só se responde lendo o código do Coreon. */}
+                  {convs.length === 0 && (
+                    <p className="text-zinc-600">
+                      Nenhuma conversão cadastrada nesta referência — a quantidade da NF vai
+                      inteira para o pedido.
+                    </p>
                   )}
 
-                  <div className="flex items-center gap-2">
-                    <span className="text-zinc-500">fator</span>
-                    <input
-                      value={fator}
-                      onChange={e => setFator(e.target.value)}
-                      className="w-28 bg-zinc-900 border border-zinc-800 rounded px-2 py-1 font-mono"
-                    />
-                    <button
-                      onClick={sugerir}
-                      className="px-2 py-1 rounded bg-zinc-800 hover:bg-zinc-700"
-                      title="Preenche fator e unidades pela NF e pelo saldo — mesma regra do botão Sugerir do mapeamento."
-                    >
-                      Sugerir pela NF
-                    </button>
+                  {convs.map((c, i) => {
+                    const vence = sim?.venc?.indice === i
+                    return (
+                      <div
+                        key={i}
+                        className={`flex flex-wrap items-center gap-2 rounded border px-2 py-1.5 ${
+                          vence ? 'border-green-700 bg-green-950/30' : 'border-zinc-800'
+                        }`}
+                      >
+                        <span className="w-4 text-zinc-600">{i + 1}</span>
+
+                        <label className="flex items-center gap-1 text-zinc-400">
+                          <input
+                            type="checkbox"
+                            checked={c.umbsIguais}
+                            onChange={e => mexer(i, { umbsIguais: e.target.checked })}
+                          />
+                          universal
+                        </label>
+
+                        {!c.umbsIguais && (
+                          <>
+                            <input
+                              value={c.de}
+                              onChange={e => mexer(i, { de: e.target.value })}
+                              placeholder="de"
+                              className="w-20 bg-zinc-900 border border-zinc-800 rounded px-2 py-1 font-mono"
+                            />
+                            <span className="text-zinc-600">→</span>
+                            <input
+                              value={c.para}
+                              onChange={e => mexer(i, { para: e.target.value })}
+                              placeholder="para"
+                              className="w-20 bg-zinc-900 border border-zinc-800 rounded px-2 py-1 font-mono"
+                            />
+                          </>
+                        )}
+
+                        <input
+                          value={String(c.fator)}
+                          onChange={e =>
+                            mexer(i, { fator: Number(e.target.value.replace(',', '.')) })
+                          }
+                          placeholder="fator"
+                          className="w-24 bg-zinc-900 border border-zinc-800 rounded px-2 py-1 font-mono"
+                        />
+
+                        {c.padraoOrigem && (
+                          <span
+                            className="text-amber-500 font-mono"
+                            title="Casa por início da UMB do pedido. Nenhuma tela edita este campo — ele é preservado como está."
+                          >
+                            padrão {c.padraoOrigem}
+                          </span>
+                        )}
+
+                        {vence && (
+                          <span className="text-green-400" title={explicarMotivo(sim!.venc!.motivo)}>
+                            é esta que vale
+                          </span>
+                        )}
+
+                        <span className="flex-1" />
+
+                        <button
+                          onClick={() => sugerir(i)}
+                          className="px-2 py-1 rounded bg-zinc-800 hover:bg-zinc-700"
+                          title="Preenche fator e unidades pela NF e pelo saldo — mesma regra do botão Sugerir do mapeamento."
+                        >
+                          Sugerir
+                        </button>
+                        {!c.umbsIguais && (
+                          <button
+                            onClick={() => inverter(i)}
+                            className="px-2 py-1 rounded bg-zinc-800 hover:bg-zinc-700"
+                            title="Troca de/para e inverte o fator — o mesmo fato, escrito do jeito que se confere de cabeça."
+                          >
+                            Inverter
+                          </button>
+                        )}
+                        <button
+                          onClick={() => subir(i)}
+                          disabled={i === 0}
+                          className="px-2 py-1 rounded bg-zinc-800 hover:bg-zinc-700 disabled:opacity-30"
+                          title="A ORDEM decide: vale a primeira que casa. Subir dá precedência a esta."
+                        >
+                          ↑
+                        </button>
+                        <button
+                          onClick={() => remover(i)}
+                          className="px-2 py-1 rounded bg-zinc-800 hover:bg-red-800"
+                          title="Remover esta conversão"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    )
+                  })}
+
+                  <button
+                    onClick={adicionar}
+                    className="px-2 py-1 rounded bg-zinc-800 hover:bg-zinc-700"
+                  >
+                    + Adicionar conversão
+                  </button>
+
+                  {/* ── simular ──────────────────────────────────────────
+                      Começa nos números da nota que gerou o caso e é
+                      editável: a pergunta não é só "o que aconteceu naquela
+                      nota", é "e se for outra quantidade, este cadastro
+                      aguenta?". */}
+                  <div className="rounded border border-zinc-800 p-2 space-y-2">
+                    <div className="font-semibold text-zinc-300">Simular</div>
+
+                    <div className="flex flex-wrap items-end gap-2">
+                      <label className="flex flex-col gap-0.5">
+                        <span className="text-zinc-500">qtd NF</span>
+                        <input
+                          value={simQtd}
+                          onChange={e => setSimQtd(e.target.value)}
+                          className="w-24 bg-zinc-900 border border-zinc-800 rounded px-2 py-1 font-mono"
+                        />
+                      </label>
+                      <label className="flex flex-col gap-0.5">
+                        <span className="text-zinc-500">UMB NF</span>
+                        <input
+                          value={simUmbNf}
+                          onChange={e => setSimUmbNf(e.target.value)}
+                          className="w-20 bg-zinc-900 border border-zinc-800 rounded px-2 py-1 font-mono"
+                        />
+                      </label>
+                      <label className="flex flex-col gap-0.5">
+                        <span className="text-zinc-500">UMB pedido</span>
+                        <input
+                          value={simUmbPed}
+                          onChange={e => setSimUmbPed(e.target.value)}
+                          className="w-20 bg-zinc-900 border border-zinc-800 rounded px-2 py-1 font-mono"
+                        />
+                      </label>
+                      <label className="flex flex-col gap-0.5">
+                        <span className="text-zinc-500">valor UN NF</span>
+                        <input
+                          value={simValorNf}
+                          onChange={e => setSimValorNf(e.target.value)}
+                          className="w-24 bg-zinc-900 border border-zinc-800 rounded px-2 py-1 font-mono"
+                        />
+                      </label>
+                      <label className="flex flex-col gap-0.5">
+                        <span className="text-zinc-500">valor UN pedido</span>
+                        <input
+                          value={simValorPed}
+                          onChange={e => setSimValorPed(e.target.value)}
+                          className="w-24 bg-zinc-900 border border-zinc-800 rounded px-2 py-1 font-mono"
+                        />
+                      </label>
+                    </div>
+
+                    {sim && (
+                      <div className="font-mono space-y-0.5">
+                        <div className={sim.venc ? 'text-zinc-400' : 'text-amber-400'}>
+                          {sim.venc
+                            ? `conversão ${sim.venc.indice + 1} — ${explicarMotivo(sim.venc.motivo)} → divisor ${num(sim.conversao)}`
+                            : 'nenhuma conversão casa com estas unidades → a quantidade vai inteira'}
+                        </div>
+                        <div className="text-zinc-400">
+                          qtd para o SAP: <span className="text-zinc-200">{num(sim.qtdSap)}</span>{' '}
+                          {simUmbPed}
+                        </div>
+                        <div className="text-zinc-400">
+                          valor UN convertido:{' '}
+                          <span className="text-zinc-200">{num(sim.valorConv)}</span> · pedido{' '}
+                          {num(Number(String(simValorPed).replace(',', '.')))}
+                        </div>
+                        <div className={sim.diverge ? 'text-red-400' : 'text-green-400'}>
+                          {sim.diverge
+                            ? `divergência de ${num(sim.dif, 2)} — acima da tolerância de referência (0,50), o Executar bloquearia`
+                            : `diferença de ${num(sim.dif, 2)} — dentro da tolerância de referência (0,50)`}
+                        </div>
+                      </div>
+                    )}
                   </div>
 
                   <div className="flex flex-wrap gap-2 pt-1">
