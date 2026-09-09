@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useApp } from '../context/AppContext'
+import { QuemPediu } from './QuemPediu'
 import { SupabaseService } from '../services/supabase'
 import type { FatorEntry, ItensJson } from '../types'
 import {
@@ -162,7 +163,11 @@ interface Caso {
   vezes: number
   nf: string
   pedido: string
+
+  // Quem pediu. O Coreon já mandava os dois desde sempre (registrar_conversao_
+  // suspeita recebe p_usuario e p_centro) — só não chegavam à tela.
   centro: string
+  usuario: string
 
   // Os dois fatores da mesma suspeita. null quando o divisor é zero — e zero
   // aqui não é erro: é uma linha que não dá para julgar por este caminho.
@@ -199,6 +204,7 @@ function montar(r: Row): Caso {
     nf: txt(r, 'nf'),
     pedido: txt(r, 'pedido'),
     centro: txt(r, 'centro'),
+    usuario: txt(r, 'usuario'),
     fatorQtd: qtdNf !== 0 ? qtdSaldo / qtdNf : null,
     fatorValor: valorPedido !== 0 ? valorNf / valorPedido : null,
   }
@@ -850,6 +856,12 @@ export function ConversoesPendentes() {
                           {num(c.valorNf)} contra {num(c.valorPedido)}
                         </>
                       )}
+                    </div>
+                    {/* De onde veio. Na LISTA e não só no detalhe: uma fila de
+                        vinte casos costuma ser triada por origem antes de ser
+                        analisada uma a uma. */}
+                    <div className="mt-1">
+                      <QuemPediu usuario={c.usuario} centro={c.centro} />
                     </div>
                   </button>
                 </li>

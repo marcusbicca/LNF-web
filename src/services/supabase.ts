@@ -201,6 +201,15 @@ function centroRowToLegacy(r: Row): Row {
     Cnpjs: arr(r.cnpjs),
     FornOverrides: obj(r.forn_overrides),
     CentroPardini: boolp(r.centro_pardini),
+
+    // A empresa dona do centro. Vinha sendo descartada aqui, o que deixava o
+    // LNF-web incapaz de responder "de qual cliente é este centro" sem voltar
+    // ao banco. Ver empresaDoCentro, que aplica os três degraus da regra.
+    //
+    // O buildCentroRow continua NÃO enviando esta coluna, e é de propósito: o
+    // upsert do PostgREST só toca as colunas presentes no corpo, então omiti-la
+    // PRESERVA o que está lá. Quem edita empresa é a tela de centros do Coreon.
+    Empresa: String(r.empresa ?? ''),
   }
 }
 

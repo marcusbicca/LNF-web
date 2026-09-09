@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useApp } from '../context/AppContext'
+import { QuemPediu } from '../components/QuemPediu'
 import { SupabaseService } from '../services/supabase'
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -586,10 +587,17 @@ export function Cadastros() {
               <div key={String(s.cnpj)} className="flex items-center gap-2 py-2 text-sm">
                 <div className="min-w-0 flex-1">
                   <p className="text-zinc-100 truncate">{String(s.nome || '(sem nome)')}</p>
-                  <p className="text-xs text-zinc-500">
-                    CNPJ {String(s.cnpj)}
-                    {s.usuario ? ` · ${String(s.usuario)}` : ''}
-                  </p>
+                  <p className="text-xs text-zinc-500">CNPJ {String(s.cnpj)}</p>
+                  {/* usuário · centro · empresa, no mesmo formato das outras
+                      filas. O centro passou a vir na 0044, e aqui ele sai do
+                      dest_CNPJ da NF — que já estava resolvido antes mesmo de o
+                      fornecedor ser procurado. Linhas anteriores mostram "—". */}
+                  <div className="mt-0.5">
+                    <QuemPediu
+                      usuario={s.usuario == null ? '' : String(s.usuario)}
+                      centro={s.centro == null ? '' : String(s.centro)}
+                    />
+                  </div>
                 </div>
                 <button
                   onClick={() => cadastrarDeSolic(s)}

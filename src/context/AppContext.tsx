@@ -7,6 +7,7 @@ import {
   type ReactNode,
 } from 'react'
 import type { Config, ItensJson } from '../types'
+import type { CentrosJson } from '../utils/empresa'
 import { SupabaseService } from '../services/supabase'
 
 const CONFIG_KEY = 'lnf_config'
@@ -20,6 +21,18 @@ interface AppContextValue {
   erroItens: string | null
   carregarItens: () => Promise<void>
   gravarItens: (novoItens: ItensJson, mensagem: string) => Promise<void>
+
+  // ── os centros, só para leitura ────────────────────────────────────────
+  //
+  // Vive aqui e não em cada tela porque TRÊS precisam da mesma coisa pelo
+  // mesmo motivo: as solicitações (conversão, mapeamento, fornecedor)
+  // guardam o CENTRO, e a empresa se calcula a partir dele. Carregar em três
+  // lugares seria três chamadas para a mesma resposta.
+  //
+  // Falha em silêncio: fica null, o empresaDoCentro cai na empresa padrão e
+  // diz que caiu. Nenhuma tela existe para mostrar centro — não é motivo
+  // para nenhuma delas deixar de abrir.
+  centros: CentrosJson
 }
 
 const AppContext = createContext<AppContextValue | null>(null)
@@ -70,6 +83,28 @@ export function AppProvider({ children }: { children: ReactNode }) {
     if (config?.paUrl) void carregarItens()
   }, [config?.paUrl, carregarItens])
 
+  const [centros, setCentros] = useState<CentrosJson>(null)
+
+  useEffect(() => {
+    if (!config?.paUrl) { setCentros(null); return }
+
+    let cancelado = false
+    void (async () => {
+      try {
+        const svc = new SupabaseService(config.paUrl, config.usuario)
+        const { data } = await svc.lerArquivo('centros.json')
+        if (!cancelado) setCentros(data as CentrosJson)
+      } catch {
+        // Sem centros o empresaDoCentro cai no padrão e DIZ que caiu
+        // ('fora-do-cadastro'), então quem lê a tela não confunde "é fleury"
+        // com "não deu para saber". Derrubar a tela por isso seria pior.
+        if (!cancelado) setCentros(null)
+      }
+    })()
+
+    return () => { cancelado = true }
+  }, [config?.paUrl, config?.usuario])
+
   return (
     <AppContext.Provider
       value={{
@@ -81,6 +116,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         erroItens,
         carregarItens,
         gravarItens,
+        centros,
       }}
     >
       {children}
