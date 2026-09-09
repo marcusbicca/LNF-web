@@ -204,6 +204,64 @@ function montar(r: Row): Caso {
   }
 }
 
+// A mesma tolerância por item que o Executar usa para bloquear (TolValorItem
+// padrão da empresa). Subiu para cá porque agora dois lugares dependem dela: a
+// simulação da tela e o encerramento automático.
+const TOL_VALOR_ITEM = 0.5
+
+// ── o caso já foi resolvido POR FORA? ────────────────────────────────────────
+//
+// Acontece o tempo todo: a pessoa corrige a conversão direto no mapeamento, ou
+// numa planilha, e a suspeita continua na fila esperando alguém clicar em
+// "corrigida". A fila enche de trabalho já feito, e o que sobra de verdade some
+// no meio.
+//
+// ── por que NÃO é "a sugestão já existe no item" ────────────────────────────
+//
+// Essa é a leitura natural, e ela erra num caso que acontece de verdade: a
+// conversão sugerida EXISTE, mas está depois de outra que casa com as mesmas
+// unidades. Como vale a primeira que casa (ver resolverConv), ela nunca é
+// alcançada — o cadastro continua quebrado, e um encerramento por comparação de
+// texto arquivaria um problema real, que é o pior desfecho possível aqui.
+//
+// O que se pergunta é a pergunta que CRIOU o caso: com o cadastro de agora, os
+// números daquela nota ainda divergem? É a mesma conta da simulação que a tela
+// já mostra — se ela ficaria verde, acabou. Nenhum critério novo foi inventado,
+// e é por isso que dá para confiar no automático sem revisar um a um.
+//
+// null = não dá para afirmar (material ou referência não estão no cadastro que
+// esta máquina carregou). Na dúvida o caso FICA: fila com item a mais é
+// incômodo, fila com item a menos é problema perdido.
+function resolvidoNoCadastro(c: Caso, itens: ItensJson | null): boolean | null {
+  // Só o tipo 'conversao'. O 'umb_migo' nasce de outro sintoma — quantidade que
+  // ficou quebrada depois de converter, ou recusa do SAP por unidade — e nenhum
+  // dos dois se confere relendo o cadastro. Encerrar por analogia seria chutar.
+  if (c.tipo !== 'conversao') return false
+  if (!itens) return null
+
+  const kForn = acharChave(itens as unknown as Record<string, unknown>, c.fornecedor)
+  const doForn = kForn ? (itens as ItensJson)[kForn] : undefined
+  const kCod = acharChave(doForn as unknown as Record<string, unknown>, c.codigo)
+  const item = kCod && doForn ? doForn[kCod] : undefined
+  if (!item) return null
+
+  const kRef = acharChave(item.referencias as unknown as Record<string, unknown>, c.referencia)
+  if (!kRef) return null
+
+  const convs = reconstruirConvs(item.referencias[kRef] as FatorEntry[] | undefined)
+  if (convs.length === 0) return false
+
+  const venc = resolverConv(convs, c.umbNf, c.umbPedido)
+  const conversao = venc ? venc.conversao : 1
+  if (!Number.isFinite(conversao) || conversao === 0) return false
+
+  const qtdSap = c.qtdNf / conversao
+  const dif = Math.abs((c.valorNf * conversao - c.valorPedido) * qtdSap)
+  if (!Number.isFinite(dif)) return null
+
+  return dif <= TOL_VALOR_ITEM
+}
+
 // Os dois fatores concordam? Tolerância relativa: 12 contra 12,0001 é o mesmo
 // número contado de dois jeitos, e exigir igualdade exata reprovaria todos os
 // casos reais — as duas contas passam por arredondamento de moeda.
@@ -277,6 +335,75 @@ export function ConversoesPendentes() {
   useEffect(() => {
     if (config?.paUrl && aberto) void carregar()
   }, [config?.paUrl, aberto, carregar])
+
+  // ── encerrar sozinho o que já foi corrigido por fora ──────────────────────
+  //
+  // Roda depois de cada carga, sobre a lista inteira — e não só sobre o caso
+  // aberto. Se fosse só no selecionado, a fila continuaria mentindo sobre o
+  // próprio tamanho: a pessoa veria "23 pendentes" e descobriria uma a uma que
+  // metade já estava feita.
+  //
+  // ── por que ele avisa, em vez de só sumir ────────────────────────────────
+  //
+  // É uma escrita que tira coisa da fila de alguém. Fazer isso em silêncio é
+  // como o encerramento automático perde a confiança: numa hora ele acerta e
+  // ninguém vê, na outra ele erra e ninguém vê também. O nome de cada caso
+  // encerrado fica na tela, e quem discordar reabre no Supabase.
+  //
+  // ── o ref não é otimização ───────────────────────────────────────────────
+  //
+  // Encerrar dispara um carregar(), que dispara este efeito de novo. Sem
+  // memória do que já foi processado, dois casos viram um laço. A chave é a
+  // mesma da seleção, então um caso reaberto à mão (com os números mudados)
+  // seria reavaliado — o que está certo.
+  const jaAvaliados = useRef<Set<string>>(new Set())
+  const [encerradosSozinho, setEncerradosSozinho] = useState<string[]>([])
+
+  useEffect(() => {
+    if (!svc || !itens || casos.length === 0) return
+
+    const alvos = casos.filter(
+      c => !jaAvaliados.current.has(chave(c)) && resolvidoNoCadastro(c, itens) === true,
+    )
+    if (alvos.length === 0) {
+      casos.forEach(c => jaAvaliados.current.add(chave(c)))
+      return
+    }
+
+    let cancelado = false
+    void (async () => {
+      const fechados: string[] = []
+
+      for (const c of alvos) {
+        jaAvaliados.current.add(chave(c))
+        try {
+          await svc.salvarLinha(
+            'solicitacoes_conversao',
+            {
+              fornecedor: c.fornecedor,
+              codigo: c.codigo,
+              referencia: c.referencia,
+              tipo: c.tipo,
+              status: 'corrigida',
+            },
+            'fornecedor,codigo,referencia,tipo',
+          )
+          fechados.push(`${c.codigo} · ${c.referencia}`)
+        } catch {
+          // Falhou? O caso fica na fila e alguém decide à mão. Não vale
+          // interromper os outros nem gritar: o pior que acontece é a pessoa
+          // ver um item que ela já resolveu, que é exatamente o de antes.
+        }
+      }
+
+      if (cancelado || fechados.length === 0) return
+      setEncerradosSozinho(prev => [...prev, ...fechados])
+      setCasos(prev => prev.filter(c => !alvos.some(a => chave(a) === chave(c))))
+      if (selId && alvos.some(a => chave(a) === selId)) setSelId(null)
+    })()
+
+    return () => { cancelado = true }
+  }, [casos, itens, svc, selId])
 
   // ── o cadastro ATUAL do material selecionado ───────────────────────────────
   //
@@ -404,10 +531,11 @@ export function ConversoesPendentes() {
     const valorConv = (Number.isFinite(vNf) ? vNf : 0) * conversao
     const dif = Math.abs((valorConv - (Number.isFinite(vPed) ? vPed : 0)) * qtdSap)
 
-    // A mesma tolerância por item que o Executar usa para bloquear (TolValorItem
-    // padrão). Ela vem da empresa do centro e pode ser outra em outra régua —
-    // por isso o rótulo na tela diz "referência", e não "regra".
-    return { venc, conversao, qtdSap, valorConv, dif, diverge: dif > 0.5 }
+    // TOL_VALOR_ITEM vem da empresa do centro e pode ser outra em outra régua —
+    // por isso o rótulo na tela diz "referência", e não "regra". É a MESMA
+    // constante que o encerramento automático usa: se os dois divergissem, a
+    // tela mostraria vermelho num caso que ela mesma acabou de arquivar.
+    return { venc, conversao, qtdSap, valorConv, dif, diverge: dif > TOL_VALOR_ITEM }
   }, [convs, simQtd, simValorNf, simValorPed, simUmbNf, simUmbPed])
 
   // Preenche fator e unidades pela MESMA regra do "Sugerir" do mapeamento.
@@ -636,6 +764,35 @@ export function ConversoesPendentes() {
 
           {erro && <p className="text-xs text-red-400 font-mono">{erro}</p>}
           {status && <p className="text-xs font-mono">{status}</p>}
+
+          {/* O que o encerramento automático tirou da fila. Some só quando a
+              pessoa fecha: uma mensagem que desaparece sozinha é a mesma coisa
+              que não ter avisado. */}
+          {encerradosSozinho.length > 0 && (
+            <div className="text-xs rounded border border-emerald-900 bg-emerald-950/40 px-3 py-2">
+              <div className="flex items-start justify-between gap-3">
+                <p className="text-emerald-300">
+                  {encerradosSozinho.length === 1
+                    ? '1 caso já estava corrigido no cadastro e foi encerrado:'
+                    : `${encerradosSozinho.length} casos já estavam corrigidos no cadastro e foram encerrados:`}
+                </p>
+                <button
+                  onClick={() => setEncerradosSozinho([])}
+                  className="text-zinc-500 hover:text-zinc-300 shrink-0"
+                  title="Dispensar"
+                >
+                  ✕
+                </button>
+              </div>
+              <ul className="mt-1 font-mono text-emerald-400/80 space-y-0.5">
+                {encerradosSozinho.map(t => <li key={t}>· {t}</li>)}
+              </ul>
+              <p className="mt-1.5 text-zinc-500">
+                A conversão que vale hoje já não faz os números daquela nota divergirem.
+                Discordando, é só reabrir a linha em <code>solicitacoes_conversao</code>.
+              </p>
+            </div>
+          )}
 
           <div className="flex gap-2">
             <button

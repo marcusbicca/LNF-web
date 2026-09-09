@@ -38,6 +38,37 @@ export function convVazia(): ConvEditavel {
   return { ...VAZIA }
 }
 
+// ── a forma canônica de uma unidade de medida ────────────────────────────────
+//
+// Espelha UmbUtils.Normalizar do LNF-Coreon, e tem que continuar espelhando:
+// os dois escrevem na MESMA coluna, e uma unidade que só um dos dois considera
+// limpa é uma conversão que só um dos dois enxerga.
+//
+// A conversão só se aplica quando as unidades batem, e o teste é igualdade
+// exata. Basta um ponto sobrando para o cadastro deixar de existir na prática:
+// "CX." nunca é "CX", a quantidade vai inteira para o MIGO, e nada avisa.
+// Aconteceu três vezes no cadastro de produção (migração 0043) — e numa delas
+// a pessoa contornou cadastrando a conversão certa DO LADO da errada, com o
+// mesmo fator, sinal de que viu o sintoma sem conseguir ver a causa.
+//
+// O alfabeto é letra, dígito e '%'. O '%' fica porque É unidade de medida no
+// SAP (T006, MSEHI = '%'): uma limpeza que apagasse tudo que não é letra ou
+// dígito o transformaria em string VAZIA — e UMB vazia significa conversão
+// universal, que aplica a tudo. O conserto criaria um problema maior.
+export function normalizarUmb(umb: string | undefined | null): string {
+  if (!umb) return ''
+  return umb.toUpperCase().replace(/[^A-Z0-9%]/g, '')
+}
+
+// O '*' do padraoOrigem é SINTAXE, não unidade: "CX*" quer dizer "toda UMB de
+// pedido que comece com CX". Ele sai antes de normalizar — passar o campo
+// inteiro pelo normalizarUmb apagaria o asterisco e transformaria casamento por
+// prefixo em igualdade, mudando o que a conversão casa sem mudar a aparência.
+export function normalizarPadrao(padrao: string | undefined | null): string {
+  if (!padrao) return ''
+  return normalizarUmb(padrao.replace(/\*+$/, ''))
+}
+
 // ── TODAS as conversões da referência ────────────────────────────────────────
 //
 // A referência guarda uma LISTA, e sempre guardou: o ExecutarService percorre
@@ -98,10 +129,14 @@ export function convsToJson(convs: ConvEditavel[]): FatorEntry[] {
       if (c.umbsIguais) return f !== 1 || !!c.padraoOrigem
       return c.de.trim() !== '' && c.para.trim() !== ''
     })
+    // normalizarUmb na GRAVAÇÃO: é aqui que se impede uma "CX." nova de
+    // nascer. Sem isto, a tela continuaria aceitando o ponto e o Coreon
+    // continuaria tendo que limpar na leitura — o dado sujo no banco, e as
+    // duas pontas concordando por acidente em vez de por contrato.
     .map(c =>
       c.umbsIguais
         ? convToJson('', '', c.fator, c.padraoOrigem)
-        : convToJson(c.de.trim(), c.para.trim(), c.fator, c.padraoOrigem),
+        : convToJson(normalizarUmb(c.de), normalizarUmb(c.para), c.fator, c.padraoOrigem),
     )
 }
 
@@ -139,14 +174,18 @@ export function resolverConv(
   umbNf: string,
   umbPedido: string,
 ): ConvVencedora | null {
-  const from = (umbNf ?? '').trim().toLowerCase()
-  const to = (umbPedido ?? '').trim().toLowerCase()
+  // Normaliza os DOIS lados. O cadastro é gravado limpo, mas umbNf e umbPedido
+  // vêm da nota e do pedido no SAP — não passaram por lugar nenhum. Comparar em
+  // forma canônica é o que impede um ponto do fornecedor de desligar a
+  // conversão, e é exatamente o que o ExecutarService faz (UmbUtils.Iguais).
+  const from = normalizarUmb(umbNf)
+  const to = normalizarUmb(umbPedido)
 
   for (let i = 0; i < convs.length; i++) {
     const c = convs[i]
-    const de = (c.de ?? '').trim().toLowerCase()
-    const para = (c.para ?? '').trim().toLowerCase()
-    const padrao = (c.padraoOrigem ?? '').trim().replace(/\*+$/, '').toLowerCase()
+    const de = normalizarUmb(c.de)
+    const para = normalizarUmb(c.para)
+    const padrao = normalizarPadrao(c.padraoOrigem)
     const f = c.fator > 0 ? c.fator : 1
 
     const universal = de === '' && para === ''
