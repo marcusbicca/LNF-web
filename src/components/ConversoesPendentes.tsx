@@ -268,6 +268,27 @@ function resolvidoNoCadastro(c: Caso, itens: ItensJson | null): boolean | null {
   return dif <= TOL_VALOR_ITEM
 }
 
+// Por que um caso foi fechado. É o campo que separa falso positivo do detector
+// ("não era conversão") de trabalho feito ("resolvido") — e sem essa separação
+// não há como medir onde a regra de detecção erra.
+export type MotivoFechamento =
+  | 'nao_e_conversao'        // falso positivo do detector — é esta contagem que interessa
+  | 'resolvido'              // alguém olhou e deu por resolvido
+  | 'corrigida_no_cadastro'  // a conversão foi gravada aqui mesmo
+  | 'resolvido_por_fora'     // o cadastro já não divergia quando a fila carregou
+
+// A descrição do material, do cadastro atual. Fica na LISTA porque é o que
+// permite descartar de relance: muita coisa se reconhece como "isso não é
+// conversão" só pelo nome do item, sem abrir nada.
+function descricaoDoItem(c: Caso, itens: ItensJson | null): string {
+  if (!itens) return ''
+  const kForn = acharChave(itens as unknown as Record<string, unknown>, c.fornecedor)
+  const doForn = kForn ? (itens as ItensJson)[kForn] : undefined
+  const kCod = acharChave(doForn as unknown as Record<string, unknown>, c.codigo)
+  const item = kCod && doForn ? doForn[kCod] : undefined
+  return item?.descricao ?? ''
+}
+
 // Os dois fatores concordam? Tolerância relativa: 12 contra 12,0001 é o mesmo
 // número contado de dois jeitos, e exigir igualdade exata reprovaria todos os
 // casos reais — as duas contas passam por arredondamento de moeda.
@@ -292,6 +313,11 @@ export function ConversoesPendentes() {
   const [status, setStatus] = useState<string | null>(null)
   const [aberto, setAberto] = useState(false)
   const [selId, setSelId] = useState<string | null>(null)
+
+  // Os casos marcados para fechar em lote. Set de chave(c), não de índice: a
+  // lista se reordena e encolhe a cada carga, e índice guardado apontaria para
+  // outro caso depois — fechando o errado, calado.
+  const [marcados, setMarcados] = useState<Set<string>>(new Set())
 
   // ── TODAS as conversões da referência, e não só a primeira ────────────────
   //
@@ -391,6 +417,11 @@ export function ConversoesPendentes() {
               referencia: c.referencia,
               tipo: c.tipo,
               status: 'corrigida',
+              // Motivo próprio: este fechamento não foi juízo de ninguém, foi a
+              // constatação de que o cadastro já não diverge. Contá-lo junto com
+              // "resolvido" inflaria o número de correções feitas à mão.
+              motivo_fechamento: 'resolvido_por_fora',
+              fechado_por: config?.usuario ?? '',
             },
             'fornecedor,codigo,referencia,tipo',
           )
@@ -604,27 +635,84 @@ export function ConversoesPendentes() {
     mexer(i, { de: c.para, para: c.de, fator: c.fator > 0 ? 1 / c.fator : c.fator })
   }
 
-  async function marcar(novoStatus: 'corrigida' | 'ignorada') {
-    if (!svc || !sel) return
-    setStatus(null)
-    try {
-      await svc.salvarLinha(
-        'solicitacoes_conversao',
-        {
-          fornecedor: sel.fornecedor,
-          codigo: sel.codigo,
-          referencia: sel.referencia,
-          tipo: sel.tipo,
-          status: novoStatus,
-        },
-        'fornecedor,codigo,referencia,tipo',
-      )
-      setStatus(novoStatus === 'corrigida' ? '✅ Marcada como corrigida.' : '✅ Ignorada.')
-      setSelId(null)
-      await carregar()
-    } catch (e) {
-      setStatus(`❌ ${(e as Error).message}`)
+  // ── fechar um caso ────────────────────────────────────────────────────────
+  //
+  // 'status' diz SE foi resolvido; 'motivo_fechamento' diz POR QUE foi fechado.
+  // Os dois, e não um: status='ignorada' sozinho não distingue "não era
+  // conversão" — falso positivo do detector, que é o que se quer contar — de
+  // "depois eu vejo". Ver a migração 0045.
+  //
+  // 'fechado_por' é separado de 'usuario' de propósito: usuario é quem EXECUTOU
+  // a nota que gerou o caso, e quase nunca é quem fecha, porque quem lança não
+  // é quem cadastra.
+  async function fecharCasos(
+    alvos: Caso[],
+    novoStatus: 'corrigida' | 'ignorada',
+    motivo: MotivoFechamento,
+  ): Promise<{ ok: number; falhas: number }> {
+    if (!svc || alvos.length === 0) return { ok: 0, falhas: 0 }
+
+    let ok = 0
+    let falhas = 0
+    for (const c of alvos) {
+      try {
+        await svc.salvarLinha(
+          'solicitacoes_conversao',
+          {
+            fornecedor: c.fornecedor,
+            codigo: c.codigo,
+            referencia: c.referencia,
+            tipo: c.tipo,
+            status: novoStatus,
+            motivo_fechamento: motivo,
+            fechado_por: config?.usuario ?? '',
+          },
+          'fornecedor,codigo,referencia,tipo',
+        )
+        ok++
+      } catch {
+        // Uma falha não interrompe as outras: fechar oito de dez é melhor que
+        // fechar zero, e o que não fechou continua na fila, visível.
+        falhas++
+      }
     }
+    return { ok, falhas }
+  }
+
+  async function marcar(novoStatus: 'corrigida' | 'ignorada', motivo: MotivoFechamento) {
+    if (!sel) return
+    setStatus(null)
+    const r = await fecharCasos([sel], novoStatus, motivo)
+    if (r.ok === 0) {
+      setStatus('❌ Não foi possível gravar.')
+      return
+    }
+    setStatus(novoStatus === 'corrigida' ? '✅ Marcada como resolvida.' : '✅ Fechada.')
+    setSelId(null)
+    await carregar()
+  }
+
+  // ── fechar VÁRIOS ─────────────────────────────────────────────────────────
+  //
+  // Existe porque a triagem real não é caso a caso: olhando a descrição do
+  // material, dá para ver de relance que meia dúzia deles não é conversão
+  // nenhuma. Obrigar a abrir um por um transformava trinta segundos de leitura
+  // em dez minutos de cliques — e é isso que faz uma fila deixar de ser triada.
+  async function fecharSelecionados(novoStatus: 'corrigida' | 'ignorada', motivo: MotivoFechamento) {
+    const alvos = casos.filter(c => marcados.has(chave(c)))
+    if (alvos.length === 0) return
+
+    setStatus(null)
+    const r = await fecharCasos(alvos, novoStatus, motivo)
+
+    setMarcados(new Set())
+    if (selId && alvos.some(a => chave(a) === selId)) setSelId(null)
+    setStatus(
+      r.falhas === 0
+        ? `✅ ${r.ok} caso(s) fechado(s).`
+        : `⚠️ ${r.ok} fechado(s), ${r.falhas} falhou/falharam e continuam na fila.`,
+    )
+    await carregar()
   }
 
   // Grava a conversão no material e só então marca a solicitação. Nessa ordem
@@ -685,6 +773,8 @@ export function ConversoesPendentes() {
           referencia: sel.referencia,
           tipo: sel.tipo,
           status: 'corrigida',
+          motivo_fechamento: 'corrigida_no_cadastro',
+          fechado_por: config?.usuario ?? '',
         },
         'fornecedor,codigo,referencia,tipo',
       )
@@ -730,6 +820,8 @@ export function ConversoesPendentes() {
           referencia: sel.referencia,
           tipo: sel.tipo,
           status: 'corrigida',
+          motivo_fechamento: 'corrigida_no_cadastro',
+          fechado_por: config?.usuario ?? '',
         },
         'fornecedor,codigo,referencia,tipo',
       )
@@ -814,15 +906,63 @@ export function ConversoesPendentes() {
             <p className="text-xs text-zinc-600">Nenhum cadastro suspeito pendente.</p>
           )}
 
+          {/* ── triagem em lote ──────────────────────────────────────────
+              Só aparece com algo marcado: uma barra permanente com dois botões
+              destrutivos ao lado de uma lista é um clique errado esperando
+              acontecer. */}
+          {marcados.size > 0 && (
+            <div className="flex flex-wrap items-center gap-2 rounded border border-green-900 bg-green-950/30 px-3 py-2 text-xs">
+              <span className="text-green-300">
+                {marcados.size} marcado{marcados.size > 1 ? 's' : ''}
+              </span>
+              <button
+                onClick={() => void fecharSelecionados('ignorada', 'nao_e_conversao')}
+                className="px-2.5 py-1 rounded bg-zinc-700 hover:bg-zinc-600"
+                title="Fecha sem corrigir nada e registra que o detector errou — é a contagem desses que diz onde a regra de detecção precisa mudar."
+              >
+                Não é conversão
+              </button>
+              <button
+                onClick={() => void fecharSelecionados('corrigida', 'resolvido')}
+                className="px-2.5 py-1 rounded bg-green-700 hover:bg-green-600 text-white"
+                title="Fecha como resolvido. Se a divergência voltar, o caso REABRE sozinho — a correção que não pegou não passa por correção feita."
+              >
+                Resolvido
+              </button>
+              <button
+                onClick={() => setMarcados(new Set())}
+                className="px-2 py-1 rounded text-zinc-500 hover:text-zinc-300 ml-auto"
+              >
+                limpar
+              </button>
+            </div>
+          )}
+
           <ul className="space-y-1">
             {casos.map(c => {
               const id = chave(c)
               const bate = concordam(c)
+              const desc = descricaoDoItem(c, itens)
               return (
-                <li key={id}>
+                <li key={id} className="flex items-start gap-2">
+                  {/* A caixa fica FORA do botão: aninhar um clicável dentro do
+                      outro faria marcar abrir o caso, e a triagem em lote existe
+                      justamente para não precisar abrir. */}
+                  <input
+                    type="checkbox"
+                    checked={marcados.has(id)}
+                    onChange={e => {
+                      const n = new Set(marcados)
+                      if (e.target.checked) n.add(id)
+                      else n.delete(id)
+                      setMarcados(n)
+                    }}
+                    className="mt-2.5 accent-green-600 shrink-0"
+                    title="Marcar para fechar em lote"
+                  />
                   <button
                     onClick={() => setSelId(id === selId ? null : id)}
-                    className={`w-full text-left px-3 py-2 rounded border text-xs ${
+                    className={`flex-1 min-w-0 text-left px-3 py-2 rounded border text-xs ${
                       id === selId
                         ? 'border-green-600 bg-zinc-900'
                         : 'border-zinc-800 hover:border-zinc-700'
@@ -843,6 +983,14 @@ export function ConversoesPendentes() {
                       )}
                       {!c.ehUmbMigo && bate && <span className="text-green-400">razões batem</span>}
                     </div>
+                    {/* A descrição do material, do cadastro atual. É ela que
+                        permite descartar de relance — muita coisa se reconhece
+                        como "não é conversão" só pelo nome do item. */}
+                    {desc && (
+                      <div className="text-zinc-300 mt-0.5 truncate" title={desc}>
+                        {desc}
+                      </div>
+                    )}
                     <div className="text-zinc-500 mt-0.5">
                       {c.ehUmbMigo ? (
                         <>
@@ -1021,13 +1169,13 @@ export function ConversoesPendentes() {
 
                   <div className="flex flex-wrap gap-2 pt-1">
                     <button
-                      onClick={() => void marcar('corrigida')}
+                      onClick={() => void marcar('corrigida', 'resolvido')}
                       className="px-3 py-1.5 rounded bg-zinc-800 hover:bg-zinc-700"
                     >
                       Já corrigi por fora
                     </button>
                     <button
-                      onClick={() => void marcar('ignorada')}
+                      onClick={() => void marcar('ignorada', 'nao_e_conversao')}
                       className="px-3 py-1.5 rounded bg-zinc-800 hover:bg-zinc-700"
                     >
                       Não é problema de unidade
@@ -1261,13 +1409,13 @@ export function ConversoesPendentes() {
                     {!sel.ehUmbMigo && (
                       <>
                         <button
-                          onClick={() => void marcar('corrigida')}
+                          onClick={() => void marcar('corrigida', 'resolvido')}
                           className="px-3 py-1.5 rounded bg-zinc-800 hover:bg-zinc-700"
                         >
                           Já corrigi por fora
                         </button>
                         <button
-                          onClick={() => void marcar('ignorada')}
+                          onClick={() => void marcar('ignorada', 'nao_e_conversao')}
                           className="px-3 py-1.5 rounded bg-zinc-800 hover:bg-zinc-700"
                         >
                           Não é conversão
