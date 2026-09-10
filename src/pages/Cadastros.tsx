@@ -128,8 +128,9 @@ function pruneForn(d: Data): Data {
 //
 // ── o que estava errado ────────────────────────────────────────────────────
 //
-// Esta lista era a verdade e tinha 10 chaves. O banco tem 13: faltavam 'sap',
-// 'totvs' e 'beta'.
+// Esta lista era a verdade e tinha 10 chaves. O banco tem 11: faltavam 'sap',
+// 'totvs' e 'beta', e sobravam duas que ninguém lia — 'arquivosRestritos'
+// (0047) e 'cadastroUsuarios' (0048, quem decide isso é o nivel_adm).
 //
 // Não mostrá-las já era ruim; o estrago de verdade era outro. O blank() de
 // usuário novo saía do acessosVazio(), com as 10 — então quem fosse criado
@@ -150,7 +151,6 @@ const ACESSOS_CONHECIDOS: string[] = [
   'almoxarifado',
   'cadastroFornecedores',
   'cadastroItens',
-  'cadastroUsuarios',
   'planejamento',
   'compras',
   'fiscal',
@@ -165,7 +165,6 @@ const ACESSO_LABELS: Record<string, string> = {
   almoxarifado: 'Almoxarifado',
   cadastroFornecedores: 'Cadastro Fornecedores',
   cadastroItens: 'Cadastro Itens',
-  cadastroUsuarios: 'Cadastro Usuários',
   planejamento: 'Planejamento',
   compras: 'Compras',
   fiscal: 'Fiscal',
