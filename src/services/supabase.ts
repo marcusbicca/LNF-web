@@ -201,6 +201,15 @@ function centroRowToLegacy(r: Row): Row {
     Cnpjs: arr(r.cnpjs),
     FornOverrides: obj(r.forn_overrides),
     CentroPardini: boolp(r.centro_pardini),
+
+    // A empresa dona do centro. Vinha sendo descartada aqui, o que deixava o
+    // LNF-web incapaz de responder "de qual cliente é este centro" sem voltar
+    // ao banco. Ver empresaDoCentro, que aplica os três degraus da regra.
+    //
+    // O buildCentroRow continua NÃO enviando esta coluna, e é de propósito: o
+    // upsert do PostgREST só toca as colunas presentes no corpo, então omiti-la
+    // PRESERVA o que está lá. Quem edita empresa é a tela de centros do Coreon.
+    Empresa: String(r.empresa ?? ''),
   }
 }
 
@@ -289,20 +298,58 @@ function parseRows(txt: string): Row[] {
   throw new Error('Resposta do Power Automate não é uma lista de linhas.')
 }
 
+// O que o transporte precisa saber. Um subconjunto de Config, e não Config
+// inteira, para o ImportarLnfFiles poder montar isto a partir do formulário
+// antes mesmo de salvar.
+export interface TransporteConfig {
+  paUrl?: string
+  edgeUrl?: string
+  edgeChave?: string
+  usuario?: string
+}
+
 export class SupabaseService {
   private paUrl: string
+  private edgeUrl: string
+  private edgeChave: string
   private usuario: string
   private configurado: boolean
-  constructor(paUrl: string, usuario?: string) {
-    this.paUrl = (paUrl ?? '').trim()
-    this.usuario = (usuario ?? '').trim()
-    this.configurado = !!this.paUrl
+
+  constructor(cfg: TransporteConfig) {
+    this.paUrl = (cfg?.paUrl ?? '').trim()
+    this.edgeUrl = (cfg?.edgeUrl ?? '').trim()
+    this.edgeChave = (cfg?.edgeChave ?? '').trim()
+    this.usuario = (cfg?.usuario ?? '').trim()
+    this.configurado = !!this.edgeUrl || !!this.paUrl
+  }
+
+  // ── qual dos dois caminhos ───────────────────────────────────────────────
+  //
+  // A Edge Function ganha quando está preenchida; sem ela, o fluxo do PA.
+  //
+  // A escolha é de CONFIGURAÇÃO, não de tempo de execução: uma chamada que
+  // falha na Edge NÃO é repetida no PA. Duas razões, e as duas pesam:
+  //
+  //   • repetir uma escrita noutro transporte pode gravar duas vezes. O UPSERT
+  //     é idempotente, mas o DELETE e o RPC não são;
+  //   • fallback silencioso esconde justamente o que se quer enxergar enquanto
+  //     a Edge está em teste. Erro dela tem que aparecer na tela.
+  //
+  // Para voltar ao PA, esvazie a URL da Edge em Configurações — vale na hora.
+  private get viaEdge(): boolean {
+    return !!this.edgeUrl
+  }
+
+  /** Nome do transporte em uso — para mensagens de erro e diagnóstico. */
+  get transporte(): 'Edge Function' | 'Power Automate' {
+    return this.viaEdge ? 'Edge Function' : 'Power Automate'
   }
 
   private assertConfigurado(): void {
     if (!this.configurado)
       throw new Error(
-        'Configure a URL do Power Automate em Configurações e clique em Salvar.',
+        'Configure a URL da Edge Function (ou a do Power Automate) em ' +
+          'Configurações e clique em Salvar.',
       )
   }
 
@@ -318,15 +365,24 @@ export class SupabaseService {
     const corpo = JSON.stringify(payload)
     const t0 = Date.now()
 
+    // Mesmo corpo nos dois caminhos: a Edge Function foi escrita para receber
+    // exatamente o que o fluxo recebia. O que muda é o endereço e um cabeçalho.
+    const alvo = this.viaEdge ? this.edgeUrl : this.paUrl
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+    if (this.viaEdge) headers['x-lnf-chave'] = this.edgeChave
+
     let res: Response
     try {
-      res = await fetch(this.paUrl, {
+      res = await fetch(alvo, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: corpo,
       })
     } catch (e) {
-      const msg = 'Falha de conexão com o Power Automate: ' + (e as Error).message
+      // Na Edge, "Failed to fetch" quase sempre é CORS ou URL errada — o
+      // navegador não distingue os dois, e a função nem chega a ser alcançada.
+      const msg =
+        `Falha de conexão com ${this.transporte}: ` + (e as Error).message
       registrarChamadaPa({
         op: String(payload.op ?? '?'),
         tabela: String(payload.tabela ?? ''),
@@ -350,9 +406,17 @@ export class SupabaseService {
     })
 
     if (!res.ok) {
-      // O fluxo devolve o httpStatus do Supabase, então isto já é a recusa do
+      // Os dois devolvem o httpStatus do Supabase, então isto já é a recusa do
       // banco — não há um "200 que na verdade falhou" pra desconfiar depois.
-      const msg = `Power Automate ${res.status}: ${txt || res.statusText}`
+      //
+      // Dois status são da própria Edge e não do banco, e vale reconhecê-los:
+      // 401 é chave errada (ou ausente), 503 é LNF_CHAVE não configurada no
+      // projeto. Sem esta nota, os dois chegam como "erro genérico do banco".
+      let msg = `${this.transporte} ${res.status}: ${txt || res.statusText}`
+      if (this.viaEdge && res.status === 401)
+        msg += ' — confira o código em Configurações (cabeçalho x-lnf-chave).'
+      if (this.viaEdge && res.status === 503)
+        msg += ' — falta definir LNF_CHAVE nos secrets do projeto Supabase.'
       marcarErroPa(call.id, msg)
       throw new Error(msg)
     }

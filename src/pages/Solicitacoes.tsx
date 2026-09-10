@@ -76,7 +76,7 @@ function haQuanto(iso: string, agora: number): string {
 export function Solicitacoes() {
   const { config } = useApp()
   const svc = useMemo(
-    () => (config ? new SupabaseService(config.paUrl, config.usuario) : null),
+    () => (config ? new SupabaseService(config) : null),
     [config],
   )
   const sol = useMemo(

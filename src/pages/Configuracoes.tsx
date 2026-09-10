@@ -22,6 +22,8 @@ export function Configuracoes() {
 
   const [form, setForm] = useState<Config>({
     paUrl: config?.paUrl ?? '',
+    edgeUrl: config?.edgeUrl ?? '',
+    edgeChave: config?.edgeChave ?? '',
     itensPath: config?.itensPath ?? 'itens.json',
     usuario: config?.usuario ?? '',
   })
@@ -35,7 +37,26 @@ export function Configuracoes() {
       <h2 className="text-xl font-bold">Configurações</h2>
 
       <div className="space-y-4">
-        <Field label="URL do Power Automate (leitura e escrita)">
+        <Field label="URL da Edge Function (lnf-api)">
+          <input
+            value={form.edgeUrl}
+            onChange={e => set('edgeUrl', e.target.value)}
+            placeholder="https://<ref>.supabase.co/functions/v1/lnf-api"
+            className="input"
+          />
+        </Field>
+
+        <Field label="Código da Edge Function (LNF_CHAVE)">
+          <input
+            type="password"
+            value={form.edgeChave}
+            onChange={e => set('edgeChave', e.target.value)}
+            placeholder="o valor definido em LNF_CHAVE"
+            className="input"
+          />
+        </Field>
+
+        <Field label="URL do Power Automate (usada só com a Edge acima vazia)">
           <input
             type="password"
             value={form.paUrl}
@@ -44,6 +65,12 @@ export function Configuracoes() {
             className="input"
           />
         </Field>
+
+        <p className="text-xs text-gray-500 -mt-2">
+          {form.edgeUrl
+            ? 'Transporte em uso: Edge Function. Esvazie a URL dela para voltar ao Power Automate.'
+            : 'Transporte em uso: Power Automate. Preencha a URL da Edge Function para trocar.'}
+        </p>
 
         <Field label="Usuário (autoriza quem pode gravar)">
           <input
@@ -96,7 +123,7 @@ export function Configuracoes() {
 
       <DiagnosticoPa />
 
-      <ImportarLnfFiles paUrl={form.paUrl} usuario={form.usuario} />
+      <ImportarLnfFiles cfg={form} />
     </div>
   )
 }
@@ -243,7 +270,7 @@ function Bloco({ titulo, texto }: { titulo: string; texto: string }) {
 }
 
 // ── Importação única LNF-files → Supabase ────────────────────────────────────
-function ImportarLnfFiles({ paUrl, usuario }: { paUrl: string; usuario: string }) {
+function ImportarLnfFiles({ cfg }: { cfg: Config }) {
   const [aberto, setAberto] = useState(false)
   const [ghToken, setGhToken] = useState('')
   const [owner, setOwner] = useState(IMPORT_DEFAULTS.owner)
@@ -254,8 +281,8 @@ function ImportarLnfFiles({ paUrl, usuario }: { paUrl: string; usuario: string }
 
   async function importar() {
     setErro(null)
-    if (!paUrl) {
-      setErro('Preencha a URL do Power Automate acima antes de importar.')
+    if (!cfg.edgeUrl && !cfg.paUrl) {
+      setErro('Preencha a URL da Edge Function (ou a do Power Automate) acima antes de importar.')
       return
     }
     if (!ghToken.trim()) {
@@ -274,7 +301,7 @@ function ImportarLnfFiles({ paUrl, usuario }: { paUrl: string; usuario: string }
     setRodando(true)
     setResultados([])
     try {
-      const sb = new SupabaseService(paUrl, usuario)
+      const sb = new SupabaseService(cfg)
       const gh = new GitHubService(ghToken.trim(), owner.trim(), repo.trim())
       await importarLnfFiles(
         sb,

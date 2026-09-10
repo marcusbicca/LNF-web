@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useApp } from '../context/AppContext'
+import { QuemPediu } from '../components/QuemPediu'
 import { SupabaseService } from '../services/supabase'
 import type { CadastroJson, FatorEntry, ItensJson, PedidoItem } from '../types'
 import { format, parseLenient } from '../utils/json'
@@ -329,7 +330,7 @@ export function Mapeamento() {
   const { config, itens, carregandoItens, erroItens, gravarItens } = useApp()
 
   const svc = useMemo(
-    () => (config ? new SupabaseService(config.paUrl, config.usuario) : null),
+    () => (config ? new SupabaseService(config) : null),
     [config],
   )
 
@@ -601,8 +602,9 @@ export function Mapeamento() {
   }, [svc, verFinalizados, itens])
 
   useEffect(() => {
-    if (config?.paUrl) void carregarCasos()
-  }, [config?.paUrl, carregarCasos])
+    // Qualquer um dos dois transportes serve — ver AppContext.temTransporte.
+    if (config?.edgeUrl || config?.paUrl) void carregarCasos()
+  }, [config?.edgeUrl, config?.paUrl, carregarCasos])
 
   function selecionarCaso(caso: Record<string, unknown>) {
     const payload = (caso.payload ?? {}) as CadastroJson
@@ -885,8 +887,18 @@ export function Mapeamento() {
                   {String(c.fornecedor || '(sem fornecedor)')}
                 </p>
                 <p className="text-xs text-zinc-500 mt-0.5 font-mono">
-                  {nNfs} NF(s) · {String(c.usuario || '—')} · {fmtDataHora(c.created_at)}
+                  {nNfs} NF(s) · {fmtDataHora(c.created_at)}
                 </p>
+                {/* usuário · centro · empresa, no mesmo formato das outras
+                    filas. O centro passou a vir na 0044 — linhas anteriores
+                    mostram "—", porque o dado não foi coletado e não há de
+                    onde inventá-lo. */}
+                <div className="mt-0.5">
+                  <QuemPediu
+                    usuario={c.usuario == null ? '' : String(c.usuario)}
+                    centro={c.centro == null ? '' : String(c.centro)}
+                  />
+                </div>
               </button>
             )
           })}
