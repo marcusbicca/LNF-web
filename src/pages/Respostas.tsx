@@ -6,6 +6,7 @@ import {
   encerrada,
   type Solicitacao,
   type StatusSolicitacao,
+  type Execucao,
 } from '../services/solicitacoes'
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -53,6 +54,36 @@ const STATUS_COR: Record<StatusSolicitacao, string> = {
 const LIMITES = [10, 25, 50, 100, 250]
 const LIMITE_PADRAO = 25
 const LIMITE_KEY = 'lnf.respostas.limite'
+const PESSOA_KEY = 'lnf.respostas.porPessoa'
+
+// ── universal: uma linha, ou uma por pessoa ─────────────────────────────────
+//
+// Uma solicitação universal roda em TODAS as máquinas, e na tabela ela era uma
+// linha só, com Executor vazio — porque a coluna 'executor' da solicitação
+// nunca é preenchida nesse caso. Quem executou e o que cada um respondeu vive
+// em `solicitacoes_execucoes`, uma linha por máquina.
+//
+// As duas visões respondem perguntas diferentes, e por isso as duas existem:
+//
+//   agregado   "o que essa ação fez?"      — uma linha, e o detalhe traz as N
+//   por pessoa "quem respondeu o quê?"     — N linhas, cada uma como se fosse
+//                                            uma solicitação individual
+//
+// A de por pessoa SINTETIZA uma Solicitacao a partir de cada execução. Não é
+// truque: é o que faz o visualizador de JSON, o CSV e a duração — que já
+// existem e funcionam — servirem sem nenhuma linha nova.
+function comoSolicitacao(s: Solicitacao, e: Execucao): Solicitacao {
+  return {
+    ...s,
+    status: e.status,
+    executor: e.executor,
+    maquina: e.maquina,
+    iniciado_em: e.iniciado_em,
+    terminado_em: e.terminado_em,
+    resultado: e.resultado,
+    erro: e.erro,
+  }
+}
 
 function dt(v: string | null): string {
   if (!v) return '—'
@@ -78,6 +109,17 @@ export function Respostas() {
   )
 
   const [linhas, setLinhas] = useState<Solicitacao[]>([])
+
+  // As execuções das universais que estão na tela, por id da solicitação.
+  // Vazio para as individuais — ver a nota do comoSolicitacao.
+  const [execs, setExecs] = useState<Record<number, Execucao[]>>({})
+  const [porPessoa, setPorPessoa] = useState<boolean>(() => {
+    try { return localStorage.getItem(PESSOA_KEY) === '1' } catch { return false }
+  })
+
+  useEffect(() => {
+    try { localStorage.setItem(PESSOA_KEY, porPessoa ? '1' : '0') } catch { /* conforto */ }
+  }, [porPessoa])
   const [sel, setSel] = useState<Solicitacao | null>(null)
   const [carregando, setCarregando] = useState(false)
   const [erro, setErro] = useState<string | null>(null)
@@ -113,6 +155,15 @@ export function Respostas() {
       const f = filtroStatus ? `status=eq.${filtroStatus}` : undefined
       const rows = await sol.listar({ limit: limite, filtros: f })
       setLinhas(rows)
+
+      // Uma consulta só para todas as linhas da tela. Falhar aqui não derruba
+      // a lista: sem as execuções, as universais voltam a aparecer como uma
+      // linha sem executor, que é o comportamento antigo.
+      try {
+        setExecs(await sol.execucoesDe(rows.map((r) => r.id)))
+      } catch {
+        setExecs({})
+      }
       // Mantém a seleção apontando para a versão nova da mesma linha — sem
       // isso, um refresh durante uma execução congelaria o painel no estado
       // 'executando' e pareceria travado.
@@ -127,6 +178,25 @@ export function Respostas() {
   useEffect(() => {
     void carregar()
   }, [carregar])
+
+  // ── o que a tabela mostra ────────────────────────────────────────────────
+  //
+  // 'chave' existe porque no modo por pessoa o mesmo id aparece N vezes — e o
+  // React precisa distinguir as linhas. 'exec' marca a linha sintética, para a
+  // coluna Executor não repetir o rótulo "N máquinas".
+  const exibidas = useMemo(() => {
+    const out: Array<{ chave: string; s: Solicitacao; exec: boolean; n: number }> = []
+    for (const l of linhas) {
+      const es = execs[l.id] ?? []
+      if (porPessoa && es.length > 0) {
+        for (const e of es)
+          out.push({ chave: `${l.id}|${e.executor}|${e.maquina}`, s: comoSolicitacao(l, e), exec: true, n: 0 })
+      } else {
+        out.push({ chave: String(l.id), s: l, exec: false, n: es.length })
+      }
+    }
+    return out
+  }, [linhas, execs, porPessoa])
 
   // Auto-atualização só enquanto houver algo em voo. Ligada o tempo todo, seria
   // uma chamada de fluxo a cada 5s por aba aberta — o mesmo desperdício que o
@@ -191,10 +261,23 @@ export function Respostas() {
           Auto {emVoo ? '(a cada 5s)' : '(nada em voo)'}
         </label>
 
+        {/* Só quando há universal à vista: para uma tela só de individuais o
+            controle não muda nada, e um interruptor inerte confunde. */}
+        {Object.keys(execs).length > 0 && (
+          <label className="flex items-center gap-2 text-sm text-zinc-400">
+            <input
+              type="checkbox"
+              checked={porPessoa}
+              onChange={(e) => setPorPessoa(e.target.checked)}
+            />
+            Universais: uma linha por pessoa
+          </label>
+        )}
+
         {/* Bateu no teto = provavelmente há mais. Sem este aviso, "25 linhas"
             se lê como "só existem 25", que é a leitura errada e silenciosa. */}
         <span className="text-xs text-zinc-600 ml-auto">
-          {linhas.length} linha(s){linhas.length === limite ? ' — no limite, pode haver mais' : ''}
+          {exibidas.length} linha(s){linhas.length === limite ? ' — no limite, pode haver mais' : ''}
         </span>
       </div>
 
@@ -216,18 +299,26 @@ export function Respostas() {
             </tr>
           </thead>
           <tbody>
-            {linhas.map((l) => (
+            {exibidas.map(({ chave, s: l, exec, n }) => (
               <tr
-                key={l.id}
+                key={chave}
                 onClick={() => setSel(l)}
                 className={`cursor-pointer border-t border-zinc-900 hover:bg-zinc-900 ${
-                  sel?.id === l.id ? 'bg-zinc-900' : ''
+                  sel === l ? 'bg-zinc-900' : ''
                 }`}
               >
-                <td className="px-2 py-1 text-zinc-500">{l.id}</td>
+                <td className="px-2 py-1 text-zinc-500">
+                  {exec ? <span className="text-zinc-700">↳ {l.id}</span> : l.id}
+                </td>
                 <td className="px-2 py-1 font-mono">{l.acao}</td>
                 <td className={`px-2 py-1 ${STATUS_COR[l.status]}`}>{l.status}</td>
-                <td className="px-2 py-1 text-zinc-400">{l.executor ?? '—'}</td>
+                <td className="px-2 py-1 text-zinc-400">
+                  {l.executor
+                    ? l.executor
+                    : n > 0
+                      ? <span className="text-amber-500">{n} {n === 1 ? 'máquina' : 'máquinas'}</span>
+                      : '—'}
+                </td>
                 <td className="px-2 py-1 font-mono text-xs text-zinc-500">
                   {l.sessao_id ?? '—'}
                 </td>
@@ -235,7 +326,7 @@ export function Respostas() {
                 <td className="px-2 py-1 text-zinc-500">{duracao(l)}</td>
               </tr>
             ))}
-            {!linhas.length && !carregando && (
+            {!exibidas.length && !carregando && (
               <tr>
                 <td colSpan={7} className="px-2 py-6 text-center text-zinc-600">
                   Nenhuma solicitação.
@@ -246,13 +337,31 @@ export function Respostas() {
         </table>
       </div>
 
-      {sel && <Detalhe s={sel} onFechar={() => setSel(null)} />}
+      {sel && (
+        <Detalhe
+          s={sel}
+          // Só na visão agregada: no modo por pessoa a linha JÁ é de uma
+          // máquina só, e repetir as N ali seria mostrar o contrário do que a
+          // pessoa pediu ao trocar de visão.
+          execucoes={!porPessoa ? (execs[sel.id] ?? []) : []}
+          onFechar={() => setSel(null)}
+        />
+      )}
     </div>
   )
 }
 
 // ── painel de detalhe ────────────────────────────────────────────────────────
-function Detalhe({ s, onFechar }: { s: Solicitacao; onFechar: () => void }) {
+function Detalhe({
+  s,
+  execucoes = [],
+  onFechar,
+}: {
+  s: Solicitacao
+  /** As N máquinas, quando esta é a linha agregada de uma universal. */
+  execucoes?: Execucao[]
+  onFechar: () => void
+}) {
   const [verBruto, setVerBruto] = useState(false)
 
   // O Coreon embrulha a resposta do pipe num envelope com a duração —
@@ -300,6 +409,20 @@ function Detalhe({ s, onFechar }: { s: Solicitacao; onFechar: () => void }) {
         {s.erro && (
           <div className="text-sm text-red-400 border border-red-900 bg-red-950/30 rounded p-2">
             {s.erro}
+          </div>
+        )}
+
+        {/* ── as N máquinas, agregadas ─────────────────────────────────────
+            Cada uma com o MESMO visualizador do resultado individual: o JSON
+            é achatado por estrutura, então serve para qualquer pipe. */}
+        {execucoes.length > 0 && (
+          <div className="space-y-2">
+            <h3 className="text-xs uppercase tracking-wide text-zinc-500">
+              Respostas por máquina ({execucoes.length})
+            </h3>
+            {execucoes.map((e) => (
+              <RespostaDeUm key={`${e.executor}|${e.maquina}`} e={e} />
+            ))}
           </div>
         )}
 
@@ -509,5 +632,62 @@ function Tabela({
         </table>
       </div>
     </div>
+  )
+}
+
+
+// ── a resposta de UMA máquina, dentro da linha agregada ──────────────────────
+//
+// Colapsada por padrão: uma universal em 39 máquinas abriria 39 blocos de JSON,
+// e o que se quer ver primeiro é quem terminou e quem deu erro.
+//
+// Desembrulha o mesmo envelope que o Detalhe desembrulha ({resposta, ...}) —
+// o Coreon usa o mesmo formato nos dois casos, então mostrar o envelope aqui e
+// o conteúdo lá deixaria as duas telas discordando sobre o que é "o resultado".
+function RespostaDeUm({ e }: { e: Execucao }) {
+  const cor =
+    e.status === 'concluida' ? 'text-green-400'
+    : e.status === 'erro'    ? 'text-red-400'
+    : 'text-amber-400'
+
+  const env = (e.resultado ?? null) as Record<string, unknown> | null
+  const resposta = env && typeof env === 'object' && 'resposta' in env ? env.resposta : env
+
+  const ms =
+    e.terminado_em && e.iniciado_em
+      ? new Date(e.terminado_em).getTime() - new Date(e.iniciado_em).getTime()
+      : null
+
+  return (
+    <details className="border border-zinc-800 rounded">
+      <summary className="cursor-pointer px-2 py-1.5 text-sm flex items-center gap-2 flex-wrap hover:bg-zinc-900">
+        <span className={cor}>●</span>
+        <span className="font-mono">{e.executor || '(sem usuário)'}</span>
+        <span className="text-zinc-600">·</span>
+        <span className="text-zinc-500 text-xs">{e.maquina || '(sem máquina)'}</span>
+        <span className={`ml-auto text-xs ${cor}`}>{e.status}</span>
+        {ms != null && <span className="text-zinc-600 text-xs">{(ms / 1000).toFixed(1)}s</span>}
+      </summary>
+
+      <div className="p-2 border-t border-zinc-800 space-y-2">
+        {e.erro && (
+          <div className="text-sm text-red-400 border border-red-900 bg-red-950/30 rounded p-2">
+            {e.erro}
+          </div>
+        )}
+        {resposta == null ? (
+          <p className="text-xs text-zinc-600">Sem resultado.</p>
+        ) : (
+          <NoJson
+            titulo="Resposta"
+            valor={resposta}
+            // O caminho identifica a árvore para o CSV e para o estado de
+            // aberto/fechado. Sem o executor+máquina aqui, as N respostas de
+            // uma universal colidiriam no mesmo caminho.
+            caminho={`exec${e.solicitacao_id}-${e.executor}-${e.maquina}`}
+          />
+        )}
+      </div>
+    </details>
   )
 }

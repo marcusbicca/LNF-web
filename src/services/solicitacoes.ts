@@ -107,6 +107,19 @@ export interface Execucao {
   terminado_em: string | null
 }
 
+function paraExecucao(r: Record<string, unknown>): Execucao {
+  return {
+    solicitacao_id: Number(r.solicitacao_id ?? 0),
+    executor: String(r.executor ?? ''),
+    maquina: String(r.maquina ?? ''),
+    status: (r.status as StatusSolicitacao) ?? 'executando',
+    resultado: r.resultado ?? null,
+    erro: (r.erro as string) ?? null,
+    iniciado_em: String(r.iniciado_em ?? ''),
+    terminado_em: (r.terminado_em as string) ?? null,
+  }
+}
+
 /**
  * Terminou (para o bem ou para o mal) — nada mais vai mudar sozinho.
  *
@@ -376,6 +389,31 @@ export class SolicitacoesService {
     }))
   }
 
+  // ── as execuções de VÁRIAS solicitações, numa consulta só ────────────────
+  //
+  // A tela de Respostas mostra até 250 linhas; pedir as execuções uma a uma
+  // seriam 250 idas. Aqui é um `in.(...)` só, e o agrupamento é local.
+  //
+  // Serve TAMBÉM para descobrir quais são universais, e é por isso que ela
+  // existe: a view solicitacoes_painel não expõe a coluna `universal`, mas
+  // conferido no banco só universal tem linha em solicitacoes_execucoes — as
+  // individuais gravam o executor na própria solicitação e têm zero. Então
+  // "tem execução" é o mesmo que "é universal", sem precisar de migração.
+  async execucoesDe(ids: number[]): Promise<Record<number, Execucao[]>> {
+    if (ids.length === 0) return {}
+    const rows = await this.svc.lerLinhas('solicitacoes_execucoes', {
+      filtros: `solicitacao_id=in.(${ids.join(',')})`,
+      order: 'iniciado_em.asc',
+      limit: 2000,
+    })
+    const mapa: Record<number, Execucao[]> = {}
+    for (const r of rows) {
+      const e = paraExecucao(r)
+      ;(mapa[e.solicitacao_id] ??= []).push(e)
+    }
+    return mapa
+  }
+
   /** Uma linha por máquina que pegou esta universal. Ver a nota em Execucao. */
   async listarExecucoes(solicitacaoId: number): Promise<Execucao[]> {
     const rows = await this.svc.lerLinhas('solicitacoes_execucoes', {
@@ -385,16 +423,7 @@ export class SolicitacoesService {
       order: 'iniciado_em.desc',
       limit: 200,
     })
-    return rows.map((r) => ({
-      solicitacao_id: Number(r.solicitacao_id ?? 0),
-      executor: String(r.executor ?? ''),
-      maquina: String(r.maquina ?? ''),
-      status: (r.status as StatusSolicitacao) ?? 'executando',
-      resultado: r.resultado ?? null,
-      erro: (r.erro as string) ?? null,
-      iniciado_em: String(r.iniciado_em ?? ''),
-      terminado_em: (r.terminado_em as string) ?? null,
-    }))
+    return rows.map(paraExecucao)
   }
 
   /** O "seu comando": tira a universal de circulação. */
