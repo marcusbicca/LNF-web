@@ -13,6 +13,15 @@ import {
   type Universal,
   type Execucao,
 } from '../services/solicitacoes'
+import {
+  carregar as carregarModelos,
+  salvar as salvarModelos,
+  modeloVazio,
+  semente,
+  jsonDoModelo,
+  problemasDoModelo,
+  type ModeloReadTable,
+} from '../services/modelosReadTable'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Solicitações — pedir a um Coreon que execute algo.
@@ -881,6 +890,14 @@ export function Solicitacoes() {
       </section>
 
       {/* ── sequência montada ──────────────────────────────────────────────── */}
+      {/* ── modelos de read_table ─────────────────────────────────────────── */}
+      <Modelos
+        onUsar={(texto) => {
+          setModoJson(true)
+          setTextoJson(texto)
+        }}
+      />
+
       {fila.length > 0 && (
         <section className="border border-zinc-800 rounded p-4 space-y-3">
           <h2 className="font-semibold">Sequência ({fila.length})</h2>
@@ -1167,5 +1184,311 @@ function LinhaExecucao({ e }: { e: Execucao }) {
         </details>
       )}
     </div>
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Modelos de read_table
+//
+// A lista mora fora daqui (services/modelosReadTable): esta parte é só a
+// interface de editar. O formulário existe porque o read_table pede três
+// LISTAS, e o formulário genérico da seção "2. Ação" só sabe fazer caixa de
+// texto — foi por isso que o modo JSON nasceu, e é por isso que montar o JSON
+// à mão continuava sendo o caminho.
+//
+// A diferença que um editor faz não é digitar menos: é que o modelo guarda a
+// DESCRIÇÃO de cada campo. Um payload de MSEG com quinze siglas funciona hoje
+// e é indecifrável em três meses.
+// ─────────────────────────────────────────────────────────────────────────────
+function Modelos({ onUsar }: { onUsar: (texto: string) => void }) {
+  // Primeira visita recebe a semente. Tela vazia não ensina o formato, e o
+  // formato é metade do que se está tentando aprender aqui.
+  const [modelos, setModelos] = useState<ModeloReadTable[]>(() => {
+    const guardados = carregarModelos()
+    return guardados.length > 0 ? guardados : [semente()]
+  })
+  const [editando, setEditando] = useState<string | null>(null)
+
+  useEffect(() => {
+    salvarModelos(modelos)
+  }, [modelos])
+
+  const trocar = (m: ModeloReadTable) =>
+    setModelos((atual) =>
+      atual.map((x) => (x.id === m.id ? { ...m, atualizadoEm: new Date().toISOString() } : x)),
+    )
+
+  const novo = () => {
+    const m = modeloVazio()
+    setModelos((atual) => [...atual, m])
+    setEditando(m.id)
+  }
+
+  const remover = (id: string) => {
+    setModelos((atual) => atual.filter((x) => x.id !== id))
+    setEditando((e) => (e === id ? null : e))
+  }
+
+  return (
+    <section className="border border-zinc-800 rounded p-4 space-y-3">
+      <div className="flex items-center justify-between gap-2">
+        <h2 className="font-semibold">Modelos de read_table</h2>
+        <button
+          onClick={novo}
+          className="px-2.5 py-1 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded text-xs transition-colors"
+        >
+          + modelo
+        </button>
+      </div>
+
+      <p className="text-xs text-zinc-500">
+        As descrições da tabela e dos campos são só para lembrar o que é cada coisa — não
+        entram no JSON. Guardados neste navegador.
+      </p>
+
+      {modelos.length === 0 && (
+        <p className="text-xs text-zinc-500">Nenhum modelo. Crie o primeiro em “+ modelo”.</p>
+      )}
+
+      {modelos.map((m) => (
+        <CartaoModelo
+          key={m.id}
+          modelo={m}
+          editando={editando === m.id}
+          onEditar={() => setEditando((e) => (e === m.id ? null : m.id))}
+          onTrocar={trocar}
+          onRemover={() => remover(m.id)}
+          onUsar={onUsar}
+        />
+      ))}
+    </section>
+  )
+}
+
+function CartaoModelo({
+  modelo,
+  editando,
+  onEditar,
+  onTrocar,
+  onRemover,
+  onUsar,
+}: {
+  modelo: ModeloReadTable
+  editando: boolean
+  onEditar: () => void
+  onTrocar: (m: ModeloReadTable) => void
+  onRemover: () => void
+  onUsar: (texto: string) => void
+}) {
+  const [copiado, setCopiado] = useState(false)
+  const [verJson, setVerJson] = useState(false)
+
+  const texto = useMemo(() => jsonDoModelo(modelo), [modelo])
+  const problemas = useMemo(() => problemasDoModelo(modelo), [modelo])
+
+  // O clipboard falha em contexto não seguro e quando a permissão é negada.
+  // Falhar calado seria cruel: a pessoa aperta, nada avisa, e cola a última
+  // coisa que tinha copiado antes.
+  const copiar = async () => {
+    try {
+      await navigator.clipboard.writeText(texto)
+      setCopiado(true)
+      setTimeout(() => setCopiado(false), 1500)
+    } catch {
+      setVerJson(true) // não deu: ao menos deixa o JSON à mostra para copiar à mão
+    }
+  }
+
+  const campo = (i: number, parte: 'nome' | 'descricao', v: string) =>
+    onTrocar({
+      ...modelo,
+      campos: modelo.campos.map((c, k) => (k === i ? { ...c, [parte]: v } : c)),
+    })
+
+  return (
+    <div className="border border-zinc-800 rounded-lg p-3 space-y-2 bg-zinc-950">
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <div className="text-sm font-medium break-words">{modelo.nome || '(sem nome)'}</div>
+          <p className="text-xs text-zinc-500 break-words">
+            <span className="font-mono text-zinc-400">{modelo.tabela || '—'}</span>
+            {modelo.descricaoTabela && ` · ${modelo.descricaoTabela}`}
+          </p>
+        </div>
+        <div className="flex gap-1.5 shrink-0">
+          <button
+            onClick={() => onUsar(texto)}
+            disabled={problemas.length > 0}
+            className="px-2.5 py-1 bg-green-700 hover:bg-green-600 disabled:opacity-40 text-white rounded text-xs font-medium transition-colors"
+          >
+            Usar
+          </button>
+          <button
+            onClick={copiar}
+            className="px-2.5 py-1 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-300 rounded text-xs transition-colors"
+          >
+            {copiado ? 'Copiado' : 'Copiar'}
+          </button>
+          <button
+            onClick={onEditar}
+            className="px-2.5 py-1 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-300 rounded text-xs transition-colors"
+          >
+            {editando ? 'Fechar' : 'Editar'}
+          </button>
+        </div>
+      </div>
+
+      {/* Os problemas aparecem sempre, aberto ou fechado: são as mesmas quatro
+          recusas do ProcessarReadTable, e descobri-las depois de uma ida à
+          máquina do outro lado custa minutos. */}
+      {problemas.length > 0 && (
+        <ul className="space-y-0.5">
+          {problemas.map((p, i) => (
+            <li key={i} className="text-[11px] text-amber-500/90 break-words">
+              • {p}
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {editando && (
+        <div className="space-y-3 pt-1">
+          <div className="grid gap-2 sm:grid-cols-2">
+            <Linha rotulo="Nome do modelo">
+              <input
+                value={modelo.nome}
+                onChange={(e) => onTrocar({ ...modelo, nome: e.target.value })}
+                className="w-full bg-zinc-900 border border-zinc-700 rounded px-2 py-1 text-xs focus:outline-none focus:border-green-500"
+              />
+            </Linha>
+            <Linha rotulo="Tabela">
+              <input
+                value={modelo.tabela}
+                onChange={(e) => onTrocar({ ...modelo, tabela: e.target.value.toUpperCase() })}
+                className="w-full bg-zinc-900 border border-zinc-700 rounded px-2 py-1 text-xs font-mono focus:outline-none focus:border-green-500"
+              />
+            </Linha>
+          </div>
+
+          <Linha rotulo="Descrição da tabela">
+            <input
+              value={modelo.descricaoTabela}
+              onChange={(e) => onTrocar({ ...modelo, descricaoTabela: e.target.value })}
+              placeholder="para lembrar o que ela guarda"
+              className="w-full bg-zinc-900 border border-zinc-700 rounded px-2 py-1 text-xs focus:outline-none focus:border-green-500"
+            />
+          </Linha>
+
+          <div className="space-y-1.5">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[11px] uppercase tracking-wide text-zinc-500">
+                Campos ({modelo.campos.filter((c) => c.nome.trim()).length})
+              </span>
+              <button
+                onClick={() =>
+                  onTrocar({ ...modelo, campos: [...modelo.campos, { nome: '', descricao: '' }] })
+                }
+                className="px-2 py-0.5 bg-zinc-900 hover:bg-zinc-800 border border-dashed border-zinc-700 text-zinc-400 rounded text-[11px] transition-colors"
+              >
+                + campo
+              </button>
+            </div>
+
+            {modelo.campos.map((c, i) => (
+              <div key={i} className="flex gap-1.5">
+                <input
+                  value={c.nome}
+                  onChange={(e) => campo(i, 'nome', e.target.value.toUpperCase())}
+                  placeholder="CAMPO"
+                  className="w-32 shrink-0 bg-zinc-900 border border-zinc-700 rounded px-2 py-1 text-xs font-mono focus:outline-none focus:border-green-500"
+                />
+                <input
+                  value={c.descricao}
+                  onChange={(e) => campo(i, 'descricao', e.target.value)}
+                  placeholder="o que é este campo"
+                  className="flex-1 min-w-0 bg-zinc-900 border border-zinc-700 rounded px-2 py-1 text-xs focus:outline-none focus:border-green-500"
+                />
+                <button
+                  onClick={() =>
+                    onTrocar({ ...modelo, campos: modelo.campos.filter((_, k) => k !== i) })
+                  }
+                  aria-label={`Remover campo ${i + 1}`}
+                  className="shrink-0 w-7 rounded text-zinc-600 hover:text-red-300 hover:bg-zinc-800 transition-colors"
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+          </div>
+
+          <Linha rotulo="Filtro — uma cláusula por linha">
+            <textarea
+              value={modelo.filtro}
+              onChange={(e) => onTrocar({ ...modelo, filtro: e.target.value })}
+              rows={4}
+              spellCheck={false}
+              placeholder={"MBLNR = '5002365764'\nAND MJAHR = '2026'"}
+              className="w-full bg-zinc-900 border border-zinc-700 rounded px-2 py-1 text-xs font-mono focus:outline-none focus:border-green-500"
+            />
+          </Linha>
+          <p className="text-[11px] text-zinc-600">
+            As linhas são concatenadas com espaço pelo SAP — por isso a segunda em diante
+            começa com <span className="font-mono">AND</span> ou <span className="font-mono">OR</span>.
+            Valor de texto vai entre aspas simples.
+          </p>
+
+          <div className="grid gap-2 sm:grid-cols-2">
+            <Linha rotulo="Campos-chave">
+              <input
+                value={modelo.camposChave}
+                onChange={(e) => onTrocar({ ...modelo, camposChave: e.target.value.toUpperCase() })}
+                placeholder="MBLNR, MJAHR, ZEILE"
+                className="w-full bg-zinc-900 border border-zinc-700 rounded px-2 py-1 text-xs font-mono focus:outline-none focus:border-green-500"
+              />
+            </Linha>
+            <label className="flex items-end gap-2 text-xs text-zinc-400 pb-1">
+              <input
+                type="checkbox"
+                checked={modelo.custom}
+                onChange={(e) => onTrocar({ ...modelo, custom: e.target.checked })}
+                className="w-4 h-4 accent-green-500"
+              />
+              Custom (Z_CUSTOM_READ_TABLE_ONE)
+            </label>
+          </div>
+
+          <button
+            onClick={onRemover}
+            className="px-2.5 py-1 bg-zinc-900 hover:bg-red-950 border border-zinc-700 text-zinc-400 hover:text-red-300 rounded text-xs transition-colors"
+          >
+            Apagar modelo
+          </button>
+        </div>
+      )}
+
+      <button
+        onClick={() => setVerJson((v) => !v)}
+        className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors"
+      >
+        {verJson ? 'ocultar JSON' : 'ver JSON'}
+      </button>
+
+      {verJson && (
+        <pre className="bg-zinc-900 border border-zinc-800 rounded p-2 text-[11px] font-mono overflow-x-auto">
+          {texto}
+        </pre>
+      )}
+    </div>
+  )
+}
+
+function Linha({ rotulo, children }: { rotulo: string; children: React.ReactNode }) {
+  return (
+    <label className="block min-w-0">
+      <span className="block text-[11px] uppercase tracking-wide text-zinc-500 mb-0.5">
+        {rotulo}
+      </span>
+      {children}
+    </label>
   )
 }
