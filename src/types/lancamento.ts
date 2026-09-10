@@ -119,6 +119,41 @@ export interface Divergencias {
   frete: DivergenciaFrete[]
 }
 
+// ── as mensagens do feedback ─────────────────────────────────────────────────
+// Hoje o xlam ACUMULA isto em célula (Cod forn!L2, ver CEL_FEEDBACK_TXT) e
+// esvazia quando o JFeedback abre. Célula como buffer de mensagem é frágil —
+// sobrevive a um crash, some num Limpar, e não distingue "não houve aviso" de
+// "o buffer não foi escrito".
+//
+// Do lado do Coreon o lugar natural é o AppState: ele já é o dono do estado da
+// sessão, já é limpo pelo clear_all e não depende de a planilha estar aberta.
+// A tela consome uma LISTA, então a troca de origem não a alcança.
+export type TomMensagem = 'erro' | 'aviso' | 'ok'
+
+export interface MensagemFeedback {
+  tom: TomMensagem
+  texto: string
+}
+
+// ── o que há de errado com UMA linha ─────────────────────────────────────────
+// A planilha responde isso com cor de célula, e só. Nomeando cada problema, a
+// linha consegue dizer o que tem — que é o que falta quando o operador olha um
+// vermelho e não sabe se é o centro, o valor ou o cadastro.
+export type ProblemaLinha =
+  | 'sem-pedido'
+  | 'material-indefinido'
+  | 'centro-nao-vinculado'
+  | 'valor-divergente'
+  | 'sem-lote'
+
+export const ROTULO_PROBLEMA: Record<ProblemaLinha, string> = {
+  'sem-pedido': 'Sem pedido',
+  'material-indefinido': 'Sem cadastro',
+  'centro-nao-vinculado': 'Centro não vinculado',
+  'valor-divergente': 'Valor unitário divergente',
+  'sem-lote': 'Sem lote',
+}
+
 // ── o estado inteiro de uma NF em conferência ────────────────────────────────
 export interface EstadoLancamento {
   chaveNf: string

@@ -10,7 +10,35 @@
 // pedido, material indefinido, lote alternativo e centro fora do usuário. Um
 // mock feliz esconderia justamente o que o layout precisa provar que aguenta.
 // ─────────────────────────────────────────────────────────────────────────────
-import type { EstadoLancamento } from '../types/lancamento'
+import type { EstadoLancamento, ItemLancamento } from '../types/lancamento'
+
+// Linhas de enchimento, sem nenhuma pendência. Existem por um motivo só: uma
+// NF real tem dezenas de itens, e uma grade de seis linhas não prova que a
+// rolagem interna funciona nem que o cabeçalho gruda. As interessantes são as
+// escritas à mão, abaixo.
+const enchimento = (quantas: number, aPartirDe: number): ItemLancamento[] =>
+  Array.from({ length: quantas }, (_, k) => {
+    const n = aPartirDe + k
+    return {
+      id: `f${n}`,
+      pedido: '4500123456',
+      centro: '1010',
+      deposito: '0001',
+      material: String(101000 + n),
+      descricao: `Insumo de linha ${n} — embalagem padrão`,
+      referencia: `0754654${3200 + n}`,
+      item: String((n + 3) * 10),
+      qtdNf: 1 + (n % 5),
+      umbForn: 'CX',
+      lote: `D${9100000 + n}`,
+      validade: '31.12.2027',
+      qtdPendente: 1 + (n % 5),
+      umbPed: 'CX',
+      valorUnPedido: 120 + n,
+      valorUnNf: 120 + n,
+      freteUnPedido: 4.5,
+    }
+  })
 
 export const nfDeExemplo: EstadoLancamento = {
   chaveNf: '35260812345678000199550010000123451000123456',
@@ -162,6 +190,7 @@ export const nfDeExemplo: EstadoLancamento = {
       valorUnNf: null,
       freteUnPedido: 8.0,
     },
+    ...enchimento(18, 1),
   ],
 
   divergencias: {
