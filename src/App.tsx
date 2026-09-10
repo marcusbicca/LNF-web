@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { AppProvider } from './context/AppContext'
 import { Layout, type Page } from './components/Layout'
+import { Lancamento } from './pages/Lancamento'
 import { Mapeamento } from './pages/Mapeamento'
 import { Cadastros } from './pages/Cadastros'
 import { Tabelas } from './pages/Tabelas'
@@ -15,6 +16,7 @@ export default function App() {
   return (
     <AppProvider>
       <Layout page={page} onNavigate={setPage}>
+        {page === 'lancamento' && <Lancamento />}
         {page === 'mapeamento' && <Mapeamento />}
         {page === 'cadastros' && <Cadastros />}
         {page === 'tabelas' && <Tabelas />}

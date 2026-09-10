@@ -1,0 +1,224 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// Uma NF de mentira, para o layout ter o que mostrar.
+//
+// Está numa pasta própria e num arquivo só para ser óbvio o que remover quando
+// o transporte chegar: a tela importa APENAS `nfDeExemplo`, então trocar o mock
+// pela chamada de verdade é mexer numa linha da página.
+//
+// Os valores foram escolhidos para exercitar TODOS os estados que a planilha
+// sabe pintar — divergência de total, de frete, de valor unitário, item sem
+// pedido, material indefinido, lote alternativo e centro fora do usuário. Um
+// mock feliz esconderia justamente o que o layout precisa provar que aguenta.
+// ─────────────────────────────────────────────────────────────────────────────
+import type { EstadoLancamento, ItemLancamento } from '../types/lancamento'
+
+// Linhas de enchimento, sem nenhuma pendência. Existem por um motivo só: uma
+// NF real tem dezenas de itens, e uma grade de seis linhas não prova que a
+// rolagem interna funciona nem que o cabeçalho gruda. As interessantes são as
+// escritas à mão, abaixo.
+const enchimento = (quantas: number, aPartirDe: number): ItemLancamento[] =>
+  Array.from({ length: quantas }, (_, k) => {
+    const n = aPartirDe + k
+    return {
+      id: `f${n}`,
+      pedido: '4500123456',
+      centro: '1010',
+      deposito: '0001',
+      material: String(101000 + n),
+      descricao: `Insumo de linha ${n} — embalagem padrão`,
+      referencia: `0754654${3200 + n}`,
+      item: String((n + 3) * 10),
+      qtdNf: 1 + (n % 5),
+      umbForn: 'CX',
+      lote: `D${9100000 + n}`,
+      validade: '31.12.2027',
+      qtdPendente: 1 + (n % 5),
+      umbPed: 'CX',
+      valorUnPedido: 120 + n,
+      valorUnNf: 120 + n,
+      freteUnPedido: 4.5,
+    }
+  })
+
+export const nfDeExemplo: EstadoLancamento = {
+  chaveNf: '35260812345678000199550010000123451000123456',
+  fornecedor: 'ROCHE DIAGNOSTICA BRASIL LTDA',
+  centrosDoUsuario: ['1010', '1020'],
+  pedidos: ['4500123456', '4500123457', '', '', ''],
+
+  dados: {
+    nf: '12345-1',
+    txtCabec: '10.09.2026',
+    conhTransp: '',
+    dataEmissao: '08.09.2026',
+    dataLancamento: '10.09.2026',
+    freteNf: 480.0,
+    valorTotalNf: 18420.5,
+    valorProdutosPedido: 17_930.0,
+    totalFretePedido: 420.0,
+    totalPedido: 18_350.0,
+    planejador: 'Ana Ribeiro',
+    dataProgramada: '05.09.2026',
+    migo: '',
+  },
+
+  sinais: {
+    difFrete: true,
+    difValorUN: true,
+    itemSemPedido: true,
+    itemIndefinido: true,
+    difCentro: true,
+    centroBloqueiaLancamento: false,
+    semLote: false,
+    loteFit: true,
+    lancada: false,
+    mensagem: '',
+  },
+
+  itens: [
+    {
+      id: '1',
+      pedido: '4500123456',
+      centro: '1010',
+      deposito: '0001',
+      material: '100234',
+      descricao: 'Reagente Cobas C111 — kit 400 testes',
+      referencia: '07546543190',
+      item: '10',
+      qtdNf: 12,
+      umbForn: 'CX',
+      lote: 'A2603451',
+      validade: '30.06.2027',
+      qtdPendente: 12,
+      umbPed: 'CX',
+      valorUnPedido: 890.0,
+      valorUnNf: 890.0,
+      freteUnPedido: 12.5,
+    },
+    {
+      id: '2',
+      pedido: '4500123456',
+      centro: '1010',
+      deposito: '0001',
+      material: '100477',
+      descricao: 'Calibrador multiparamétrico — frasco 5 mL',
+      referencia: 'Lote alt.',
+      item: '20',
+      qtdNf: 4,
+      umbForn: 'FR',
+      lote: 'B7719002',
+      validade: '12.01.2027',
+      qtdPendente: 4,
+      umbPed: 'FR',
+      valorUnPedido: 1_240.0,
+      valorUnNf: 1_318.75,
+      freteUnPedido: 12.5,
+    },
+    {
+      id: '3',
+      pedido: '4500123457',
+      centro: '1020',
+      deposito: '0002',
+      material: '100901',
+      descricao: 'Controle de qualidade nível 2 — 6×3 mL',
+      referencia: '04412200876',
+      item: '10',
+      qtdNf: 6,
+      umbForn: 'CX',
+      lote: 'C1188730',
+      validade: '28.02.2027',
+      qtdPendente: 10,
+      umbPed: 'CX',
+      valorUnPedido: 315.5,
+      valorUnNf: 315.5,
+      freteUnPedido: 8.0,
+    },
+    {
+      id: '4',
+      pedido: '4500123457',
+      centro: '1090',
+      deposito: '0002',
+      material: '100902',
+      descricao: 'Solução de lavagem — galão 10 L',
+      referencia: '04412200877',
+      item: '20',
+      qtdNf: 2,
+      umbForn: 'GL',
+      lote: 'C1188744',
+      validade: '15.11.2026',
+      qtdPendente: 2,
+      umbPed: 'GL',
+      valorUnPedido: 640.0,
+      valorUnNf: 640.0,
+      freteUnPedido: 8.0,
+    },
+    {
+      id: '5',
+      pedido: 'Sem pedido',
+      centro: '1010',
+      deposito: '-',
+      material: 'Indefinido',
+      descricao: 'PONTEIRA DESCARTAVEL 1000UL RACK C/96',
+      referencia: '99001122334',
+      item: '',
+      qtdNf: 3,
+      umbForn: 'CX',
+      lote: '',
+      validade: '',
+      qtdPendente: 0,
+      umbPed: '',
+      valorUnPedido: null,
+      valorUnNf: 128.4,
+      freteUnPedido: null,
+    },
+    {
+      id: '6',
+      pedido: 'Finalizado',
+      centro: '1020',
+      deposito: '0002',
+      material: '100455',
+      descricao: 'Tampão de diluição — frasco 100 mL',
+      referencia: '04412200880',
+      item: '30',
+      qtdNf: 0,
+      umbForn: '',
+      lote: '',
+      validade: '',
+      qtdPendente: 5,
+      umbPed: 'FR',
+      valorUnPedido: 210.0,
+      valorUnNf: null,
+      freteUnPedido: 8.0,
+    },
+    ...enchimento(18, 1),
+  ],
+
+  divergencias: {
+    valorUn: [
+      {
+        nfSerie: '12345-1',
+        pedido: '4500123456',
+        item: '20',
+        valorUnNf: 1_318.75,
+        divisor: '1',
+      },
+    ],
+    semPedido: [
+      {
+        nfSerie: '12345-1',
+        centroNf: '1010',
+        codigo: 'Indefinido',
+        referencia: '99001122334',
+        qtdNf: 3,
+      },
+    ],
+    frete: [
+      {
+        nfSerie: '12345-1',
+        pedido: '4500123456',
+        itens: ['10', '20'],
+        valorFreteTotal: 420.0,
+      },
+    ],
+  },
+}
