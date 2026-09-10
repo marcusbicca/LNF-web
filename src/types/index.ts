@@ -104,7 +104,25 @@ export interface Config {
   // URL do fluxo do Power Automate (o mesmo que o LNF-Coreon usa). O fluxo
   // guarda o secret do Supabase no servidor e executa as chamadas REST — o
   // secret NUNCA fica no browser. Guardada só no localStorage.
+  //
+  // Continua aqui como CAMINHO ALTERNATIVO: com edgeUrl preenchida, ela não é
+  // usada. Vazia a edgeUrl, o transporte volta para cá sem mais nada.
   paUrl: string
+
+  // ── Edge Function (lnf-api), o caminho direto ────────────────────────────
+  //
+  // https://<ref>.supabase.co/functions/v1/lnf-api — mesmo contrato de entrada
+  // e de saída do fluxo do PA, porque ela foi escrita para substituí-lo.
+  // Preenchida, passa a ser o transporte.
+  edgeUrl: string
+
+  // O valor de LNF_CHAVE, que viaja no cabeçalho x-lnf-chave.
+  //
+  // ⚠️ Isto FICA NO BROWSER (localStorage), exatamente como a URL assinada do
+  // PA já fica. As duas dão o mesmo acesso ao banco, então não é um degrau novo
+  // de exposição — mas também não vira segredo de servidor por estar aqui.
+  edgeChave: string
+
   // itensPath permanece só como seletor lógico do "arquivo" (mapeado para a
   // tabela pelo basename): itens.json→materiais, forn.json→fornecedores, etc.
   itensPath: string

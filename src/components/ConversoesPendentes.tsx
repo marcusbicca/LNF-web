@@ -303,7 +303,7 @@ export function ConversoesPendentes() {
   const { config, itens, gravarItens } = useApp()
 
   const svc = useMemo(
-    () => (config ? new SupabaseService(config.paUrl, config.usuario) : null),
+    () => (config ? new SupabaseService(config) : null),
     [config],
   )
 

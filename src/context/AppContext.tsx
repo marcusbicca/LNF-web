@@ -60,7 +60,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setCarregandoItens(true)
     setErroItens(null)
     try {
-      const svc = new SupabaseService(config.paUrl, config.usuario)
+      const svc = new SupabaseService(config)
       const { data, sha } = await svc.lerArquivo(config.itensPath)
       setItens(data as ItensJson)
       setItensSha(sha)
@@ -73,25 +73,30 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   async function gravarItens(novoItens: ItensJson, mensagem: string) {
     if (!config) throw new Error('Configuração ausente')
-    const svc = new SupabaseService(config.paUrl, config.usuario)
+    const svc = new SupabaseService(config)
     const novoSha = await svc.gravarArquivo(config.itensPath, novoItens, itensSha ?? '', mensagem)
     setItens(novoItens)
     setItensSha(novoSha)
   }
 
+  // Configurado = tem QUALQUER um dos dois transportes. Antes isto olhava só o
+  // paUrl, e com apenas a Edge preenchida a tela ficava vazia para sempre — sem
+  // erro, sem carregar, sem nada dizendo por quê.
+  const temTransporte = !!(config?.edgeUrl || config?.paUrl)
+
   useEffect(() => {
-    if (config?.paUrl) void carregarItens()
-  }, [config?.paUrl, carregarItens])
+    if (temTransporte) void carregarItens()
+  }, [temTransporte, carregarItens])
 
   const [centros, setCentros] = useState<CentrosJson>(null)
 
   useEffect(() => {
-    if (!config?.paUrl) { setCentros(null); return }
+    if (!temTransporte) { setCentros(null); return }
 
     let cancelado = false
     void (async () => {
       try {
-        const svc = new SupabaseService(config.paUrl, config.usuario)
+        const svc = new SupabaseService(config)
         const { data } = await svc.lerArquivo('centros.json')
         if (!cancelado) setCentros(data as CentrosJson)
       } catch {
@@ -103,7 +108,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     })()
 
     return () => { cancelado = true }
-  }, [config?.paUrl, config?.usuario])
+  }, [temTransporte, config?.edgeUrl, config?.edgeChave, config?.paUrl, config?.usuario])
 
   return (
     <AppContext.Provider

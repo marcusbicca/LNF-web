@@ -50,7 +50,7 @@ function csvEscape(s: string): string {
 export function Historico() {
   const { config } = useApp()
   const svc = useMemo(
-    () => (config ? new SupabaseService(config.paUrl, config.usuario) : null),
+    () => (config ? new SupabaseService(config) : null),
     [config],
   )
 

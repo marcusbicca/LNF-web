@@ -330,7 +330,7 @@ export function Mapeamento() {
   const { config, itens, carregandoItens, erroItens, gravarItens } = useApp()
 
   const svc = useMemo(
-    () => (config ? new SupabaseService(config.paUrl, config.usuario) : null),
+    () => (config ? new SupabaseService(config) : null),
     [config],
   )
 
@@ -602,8 +602,9 @@ export function Mapeamento() {
   }, [svc, verFinalizados, itens])
 
   useEffect(() => {
-    if (config?.paUrl) void carregarCasos()
-  }, [config?.paUrl, carregarCasos])
+    // Qualquer um dos dois transportes serve — ver AppContext.temTransporte.
+    if (config?.edgeUrl || config?.paUrl) void carregarCasos()
+  }, [config?.edgeUrl, config?.paUrl, carregarCasos])
 
   function selecionarCaso(caso: Record<string, unknown>) {
     const payload = (caso.payload ?? {}) as CadastroJson
