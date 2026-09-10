@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useApp } from '../context/AppContext'
 import { SupabaseService } from '../services/supabase'
 import {
@@ -121,6 +121,15 @@ export function Respostas() {
     try { localStorage.setItem(PESSOA_KEY, porPessoa ? '1' : '0') } catch { /* conforto */ }
   }, [porPessoa])
   const [sel, setSel] = useState<Solicitacao | null>(null)
+
+  // ── o detalhe abre ABAIXO da lista ───────────────────────────────────────
+  //
+  // No desktop ele costuma já estar à vista. No celular, com a lista ocupando
+  // a tela inteira, tocar num cartão não mudava NADA de visível — a resposta
+  // aparecia fora do campo de visão e parecia que o toque não funcionou.
+  //
+  // 'nearest' e não 'start': quando o painel já está visível, não rola nada.
+  const refDetalhe = useRef<HTMLDivElement>(null)
   const [carregando, setCarregando] = useState(false)
   const [erro, setErro] = useState<string | null>(null)
   const [filtroStatus, setFiltroStatus] = useState<string>('')
@@ -179,6 +188,12 @@ export function Respostas() {
     void carregar()
   }, [carregar])
 
+  useEffect(() => {
+    if (sel) refDetalhe.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+    // Só quando MUDA de linha selecionada. Sem o id na dependência, cada
+    // atualização automática (5s) roubaria a rolagem de quem está lendo.
+  }, [sel?.id])
+
   // ── o que a tabela mostra ────────────────────────────────────────────────
   //
   // 'chave' existe porque no modo por pessoa o mesmo id aparece N vezes — e o
@@ -217,19 +232,26 @@ export function Respostas() {
 
   return (
     <div className="p-4 space-y-4">
-      <div className="flex flex-wrap items-center gap-2">
+      {/* ── a barra, em grupos que empilham ──────────────────────────────
+          Era um flex-wrap solto: no celular os dois selects dividiam a linha
+          com o botão e o "Auto", e sobrava largura para "toc…" e "últ…" — os
+          rótulos ficavam ilegíveis justamente onde não há tooltip.
+          Agora cada grupo é uma faixa própria no telefone e tudo volta a uma
+          linha a partir de md. */}
+      <div className="flex flex-col md:flex-row md:flex-wrap md:items-center gap-2">
         <button
           onClick={() => void carregar()}
           disabled={carregando}
-          className="bg-zinc-800 hover:bg-zinc-700 disabled:opacity-40 rounded px-3 py-1.5 text-sm"
+          className="self-start md:self-auto bg-zinc-800 hover:bg-zinc-700 disabled:opacity-40 rounded px-3 py-1.5 text-sm"
         >
           {carregando ? 'Lendo…' : 'Atualizar'}
         </button>
 
+        <div className="grid grid-cols-2 gap-2 md:contents">
         <select
           value={filtroStatus}
           onChange={(e) => setFiltroStatus(e.target.value)}
-          className="bg-zinc-900 border border-zinc-700 rounded px-2 py-1.5 text-sm"
+          className="w-full bg-zinc-900 border border-zinc-700 rounded px-2 py-1.5 text-sm"
         >
           <option value="">todos os status</option>
           <option value="pendente">pendente</option>
@@ -242,7 +264,7 @@ export function Respostas() {
         <select
           value={limite}
           onChange={(e) => setLimite(Number(e.target.value))}
-          className="bg-zinc-900 border border-zinc-700 rounded px-2 py-1.5 text-sm"
+          className="w-full bg-zinc-900 border border-zinc-700 rounded px-2 py-1.5 text-sm"
           title="Quantas solicitações buscar. Cada leitura custa uma chamada do fluxo."
         >
           {LIMITES.map((n) => (
@@ -251,6 +273,7 @@ export function Respostas() {
             </option>
           ))}
         </select>
+        </div>
 
         <label className="flex items-center gap-2 text-sm text-zinc-400">
           <input
@@ -276,7 +299,7 @@ export function Respostas() {
 
         {/* Bateu no teto = provavelmente há mais. Sem este aviso, "25 linhas"
             se lê como "só existem 25", que é a leitura errada e silenciosa. */}
-        <span className="text-xs text-zinc-600 ml-auto">
+        <span className="text-xs text-zinc-600 w-full md:w-auto md:ml-auto">
           {exibidas.length} linha(s){linhas.length === limite ? ' — no limite, pode haver mais' : ''}
         </span>
       </div>
@@ -287,7 +310,55 @@ export function Respostas() {
         </div>
       )}
 
-      <div className="overflow-x-auto border border-zinc-800 rounded">
+      {/* ══ celular: um CARTÃO por linha ═══════════════════════════════════
+          A tabela tem sete colunas fixas. Num telefone elas não cabem, e
+          rolagem horizontal numa LISTA de navegação é o pior dos mundos: some
+          o status, que é justamente o que se procura de relance.
+          Aqui a mesma linha vira um bloco de três alturas, sem corte. */}
+      <div className="md:hidden space-y-2">
+        {exibidas.map(({ chave, s: l, exec, n }) => (
+          <button
+            key={chave}
+            onClick={() => setSel(l)}
+            className={`w-full text-left border rounded p-2.5 space-y-1 ${
+              sel === l ? 'border-zinc-600 bg-zinc-900' : 'border-zinc-800'
+            }`}
+          >
+            <div className="flex items-baseline gap-2">
+              <span className="text-zinc-600 text-xs shrink-0">
+                {exec ? `↳ ${l.id}` : `#${l.id}`}
+              </span>
+              {/* min-w-0 + break-all: nome de ação longo quebra em vez de
+                  empurrar o status para fora da tela. */}
+              <span className="font-mono text-sm min-w-0 break-all">{l.acao}</span>
+              <span className={`ml-auto text-xs shrink-0 ${STATUS_COR[l.status]}`}>
+                {l.status}
+              </span>
+            </div>
+
+            <div className="text-xs text-zinc-400 break-all">
+              {l.executor
+                ? l.executor
+                : n > 0
+                  ? <span className="text-amber-500">{n} {n === 1 ? 'máquina' : 'máquinas'}</span>
+                  : <span className="text-zinc-600">sem executor</span>}
+              {l.maquina && <span className="text-zinc-600"> · {l.maquina}</span>}
+            </div>
+
+            <div className="flex flex-wrap gap-x-3 text-xs text-zinc-600">
+              <span>{dt(l.criado_em)}</span>
+              <span>{duracao(l)}</span>
+              {l.sessao_id && <span className="font-mono break-all">{l.sessao_id}</span>}
+            </div>
+          </button>
+        ))}
+        {!exibidas.length && !carregando && (
+          <p className="py-6 text-center text-zinc-600 text-sm">Nenhuma solicitação.</p>
+        )}
+      </div>
+
+      {/* ══ desktop: a tabela de sempre ════════════════════════════════════ */}
+      <div className="hidden md:block overflow-x-auto border border-zinc-800 rounded">
         <table className="w-full text-sm">
           <thead className="bg-zinc-900 text-zinc-400">
             <tr>
@@ -338,6 +409,7 @@ export function Respostas() {
       </div>
 
       {sel && (
+        <div ref={refDetalhe}>
         <Detalhe
           s={sel}
           // Só na visão agregada: no modo por pessoa a linha JÁ é de uma
@@ -346,6 +418,7 @@ export function Respostas() {
           execucoes={!porPessoa ? (execs[sel.id] ?? []) : []}
           onFechar={() => setSel(null)}
         />
+        </div>
       )}
     </div>
   )
@@ -372,8 +445,8 @@ function Detalhe({
 
   return (
     <div className="border border-zinc-800 rounded">
-      <div className="flex items-center gap-3 px-3 py-2 bg-zinc-900 border-b border-zinc-800">
-        <span className="font-mono text-sm">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 bg-zinc-900 border-b border-zinc-800">
+        <span className="font-mono text-sm min-w-0 break-all">
           #{s.id} · {s.acao}
         </span>
         <span className={`text-sm ${STATUS_COR[s.status]}`}>{s.status}</span>
@@ -445,7 +518,7 @@ function Pares({ titulo, pares }: { titulo: string; pares: Array<[string, string
   return (
     <div>
       <div className="text-xs uppercase tracking-wide text-zinc-500 mb-1">{titulo}</div>
-      <div className="grid grid-cols-2 md:grid-cols-3 gap-x-4 gap-y-1 text-sm">
+      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-x-4 gap-y-1 text-sm">
         {pares.map(([k, v]) => (
           <div key={k} className="flex gap-2 min-w-0">
             <span className="text-zinc-500 shrink-0">{k}:</span>
