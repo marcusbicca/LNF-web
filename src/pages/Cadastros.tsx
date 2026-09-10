@@ -44,8 +44,11 @@ interface EntityConfig {
   // Escrita por linha no Supabase. oldKey presente = rename (chave mudou).
   save: (svc: SupabaseService, key: string, data: Data, oldKey?: string) => Promise<void>
   remove: (svc: SupabaseService, key: string) => Promise<void>
-  blank: () => Data
-  fields: FieldSpec[]
+  // Recebem as linhas JÁ CARREGADAS porque uma delas depende dos dados: os
+  // acessos do usuário são a união do catálogo com o que existe no banco.
+  // As outras entidades ignoram o argumento.
+  blank: (entries: Entry[]) => Data
+  fields: (entries: Entry[]) => FieldSpec[]
 }
 
 // ── helpers de path ──────────────────────────────────────────────────────────
@@ -120,35 +123,82 @@ function pruneForn(d: Data): Data {
   return o
 }
 
-// ── acessos padrão (usuários) ────────────────────────────────────────────────
-const ACESSOS = [
+// ═══════════════════════════════════════════════════════════════════════════
+// ACESSOS — a lista de chaves vem dos DADOS, e não daqui.
+//
+// ── o que estava errado ────────────────────────────────────────────────────
+//
+// Esta lista era a verdade e tinha 10 chaves. O banco tem 11: faltavam 'sap',
+// 'totvs' e 'beta', e sobravam duas que ninguém lia — 'arquivosRestritos'
+// (0047) e 'cadastroUsuarios' (0048, quem decide isso é o nivel_adm).
+//
+// Não mostrá-las já era ruim; o estrago de verdade era outro. O blank() de
+// usuário novo saía do acessosVazio(), com as 10 — então quem fosse criado
+// pelo LNF-web nascia SEM 'sap', que os 38 usuários existentes têm como true.
+//
+// E chave ausente não é "false" por acaso: o gate lê `acessos->>sap = 'true'`,
+// e ausente nunca é true. Usuário criado por aqui nascia sem SAP, em silêncio.
+//
+// ── como passa a funcionar ─────────────────────────────────────────────────
+//
+// Esta lista vira só o CATÁLOGO CONHECIDO — serve para a ORDEM e para o rótulo
+// legível. As chaves de verdade são a UNIÃO dela com tudo que aparecer nos
+// usuários carregados. Uma permissão nova passa a aparecer sozinha, assim que
+// o primeiro usuário a tiver, sem ninguém precisar vir editar este arquivo.
+// ═══════════════════════════════════════════════════════════════════════════
+const ACESSOS_CONHECIDOS: string[] = [
+  'sap',
+  'almoxarifado',
   'cadastroFornecedores',
   'cadastroItens',
-  'cadastroUsuarios',
-  'arquivosRestritos',
-  'almoxarifado',
   'planejamento',
   'compras',
   'fiscal',
   'lancamentoFuturo',
   'internet',
-] as const
+  'totvs',
+  'beta',
+]
 
 const ACESSO_LABELS: Record<string, string> = {
+  sap: 'SAP',
+  almoxarifado: 'Almoxarifado',
   cadastroFornecedores: 'Cadastro Fornecedores',
   cadastroItens: 'Cadastro Itens',
-  cadastroUsuarios: 'Cadastro Usuários',
-  arquivosRestritos: 'Arquivos Restritos',
-  almoxarifado: 'Almoxarifado',
   planejamento: 'Planejamento',
   compras: 'Compras',
   fiscal: 'Fiscal',
   lancamentoFuturo: 'Lançamento Futuro',
   internet: 'Internet (MeuDanfe)',
+  totvs: 'TOTVS',
+  beta: 'Canal beta',
 }
 
-function acessosVazio(): Record<string, boolean> {
-  return Object.fromEntries(ACESSOS.map(a => [a, false]))
+// Chave sem rótulo curado ainda precisa aparecer legível: camelCase vira
+// "Camel Case". É o que deixa uma permissão nova utilizável na tela no dia em
+// que nasce, sem esperar alguém vir aqui batizá-la.
+function rotuloDeAcesso(k: string): string {
+  if (ACESSO_LABELS[k]) return ACESSO_LABELS[k]
+  const s = k.replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+  return s.charAt(0).toUpperCase() + s.slice(1)
+}
+
+// Conhecidas primeiro, na ordem curada; o que aparecer nos dados e não estiver
+// no catálogo entra depois, em ordem alfabética — para a tela não embaralhar a
+// cada carga.
+function chavesDeAcesso(entries: Entry[]): string[] {
+  const vistas = new Set<string>()
+  for (const e of entries) {
+    const a = e.data?.acessos
+    if (a && typeof a === 'object')
+      for (const k of Object.keys(a as Record<string, unknown>)) vistas.add(k)
+  }
+  const novas = [...vistas].filter(k => !ACESSOS_CONHECIDOS.includes(k)).sort()
+  return [...ACESSOS_CONHECIDOS, ...novas]
+}
+
+function acessosVazio(chaves: string[]): Record<string, boolean> {
+  return Object.fromEntries(chaves.map(a => [a, false]))
 }
 
 // ── definição das entidades ──────────────────────────────────────────────────
@@ -168,7 +218,7 @@ const ENTIDADES: EntityConfig[] = [
     save: (svc, key, data, oldKey) => svc.salvarFornecedor(key, pruneForn(data), oldKey),
     remove: (svc, key) => svc.removerFornecedor(key),
     blank: () => ({ cnpjs: [] }),
-    fields: [
+    fields: () => [
       { path: 'raizCNPJs', label: 'Raiz CNPJs', type: 'list' },
       { path: 'cnpjs', label: 'CNPJs', type: 'list' },
       { path: 'lifnrs', label: 'LIFNRs', type: 'list' },
@@ -205,31 +255,55 @@ const ENTIDADES: EntityConfig[] = [
     keyLabel: 'Usuário',
     parse: raw => {
       const obj = (raw as Record<string, Data>) ?? {}
-      return Object.entries(obj).map(([k, v]) => ({
+      const brutos = Object.entries(obj)
+
+      // A união é calculada ANTES de montar as linhas, sobre os dados crus:
+      // assim toda linha sai com o MESMO conjunto de chaves, e o formulário
+      // não muda de tamanho conforme o usuário selecionado.
+      const chaves = chavesDeAcesso(
+        brutos.map(([k, v]) => ({ key: k, data: v })),
+      )
+
+      return brutos.map(([k, v]) => ({
         key: k,
         data: {
+          nome: String(v.nome ?? ''),
           centros: asList(v.centros),
-          acessos: { ...acessosVazio(), ...((v.acessos as Record<string, boolean>) ?? {}) },
+          acessos: { ...acessosVazio(chaves), ...((v.acessos as Record<string, boolean>) ?? {}) },
           nivelAdm: typeof v.nivelAdm === 'number' ? v.nivelAdm : 0,
         },
       }))
     },
+    // Sem acessosVazio() aqui: o 'data' já vem do parse (ou do blank) com o
+    // conjunto completo. Reaplicar o catálogo por cima RESSUSCITARIA como
+    // false uma chave que alguém tenha removido do banco de propósito.
     save: (svc, key, data, oldKey) =>
       svc.salvarUsuario(
         key,
         {
+          nome: String(data.nome ?? ''),
           centros: asList(data.centros),
-          acessos: { ...acessosVazio(), ...((data.acessos as Record<string, boolean>) ?? {}) },
+          acessos: (data.acessos as Record<string, boolean>) ?? {},
           nivelAdm: Number(data.nivelAdm) || 0,
         },
         oldKey,
       ),
     remove: (svc, key) => svc.removerUsuario(key),
-    blank: () => ({ centros: [], acessos: acessosVazio(), nivelAdm: 0 }),
-    fields: [
+    blank: entries => ({
+      nome: '',
+      centros: [],
+      acessos: acessosVazio(chavesDeAcesso(entries)),
+      nivelAdm: 0,
+    }),
+    fields: entries => [
+      { path: 'nome', label: 'Nome', type: 'text' },
       { path: 'nivelAdm', label: 'Nível Adm', type: 'number' },
       { path: 'centros', label: 'Centros', type: 'list' },
-      ...ACESSOS.map(a => ({ path: `acessos.${a}`, label: ACESSO_LABELS[a], type: 'boolean' as const })),
+      ...chavesDeAcesso(entries).map(a => ({
+        path: `acessos.${a}`,
+        label: rotuloDeAcesso(a),
+        type: 'boolean' as const,
+      })),
     ],
   },
   {
@@ -276,7 +350,7 @@ const ENTIDADES: EntityConfig[] = [
       CentroPardini: false,
       FornOverrides: null,
     }),
-    fields: [
+    fields: () => [
       { path: 'GenericLote', label: 'Generic Lote', type: 'text' },
       { path: 'GenericVal', label: 'Generic Val', type: 'text' },
       { path: 'GenericLoteItems', label: 'Generic Lote Items', type: 'list' },
@@ -358,7 +432,7 @@ export function Cadastros() {
     setErro(null)
     setStatus(null)
     setSelKey(null)
-    setForm({ key: '', data: ent.blank() })
+    setForm({ key: '', data: ent.blank([]) })
     const p = pathFor(ent)
     setPath(p)
     try {
@@ -391,7 +465,7 @@ export function Cadastros() {
 
   function novo() {
     setSelKey(null)
-    setForm({ key: '', data: ent.blank() })
+    setForm({ key: '', data: ent.blank(entries) })
     setStatus(null)
     setSolicCnpj(null)
   }
@@ -668,7 +742,7 @@ export function Cadastros() {
               />
             </div>
 
-            {ent.fields.map(f => (
+            {ent.fields(entries).map(f => (
               <Campo
                 key={f.path}
                 spec={f}
