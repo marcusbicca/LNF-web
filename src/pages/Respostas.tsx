@@ -522,7 +522,9 @@ function Pares({ titulo, pares }: { titulo: string; pares: Array<[string, string
         {pares.map(([k, v]) => (
           <div key={k} className="flex gap-2 min-w-0">
             <span className="text-zinc-500 shrink-0">{k}:</span>
-            <span className="truncate" title={v}>
+            {/* Ver a nota no NoJson: cortar com truncate esconde o dado em
+                qualquer tela sem hover. */}
+            <span className="min-w-0 break-words" title={v}>
               {v}
             </span>
           </div>
@@ -582,11 +584,16 @@ function NoJson({
     return (
       <Secao titulo={titulo} nivel={nivel}>
         {escalares.length > 0 && (
-          <div className="grid grid-cols-2 md:grid-cols-3 gap-x-4 gap-y-1 text-sm mb-2">
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-x-4 gap-y-1 text-sm mb-2">
             {escalares.map(([k, v]) => (
               <div key={k} className="flex gap-2 min-w-0">
                 <span className="text-zinc-500 shrink-0">{k}:</span>
-                <span className="truncate font-mono" title={String(v)}>
+                {/* break-words e NÃO truncate. O truncate só se desfaz com
+                    hover pelo title — e no celular não há hover, então o
+                    valor cortado ficava simplesmente inacessível
+                    ('Usuario: vanderl…', 'mensagem_inicial: T.'). Quebrar
+                    gasta altura, que é o que sobra numa tela de telefone. */}
+                <span className="font-mono min-w-0 break-words" title={String(v)}>
                   {v === true ? '✓' : v === false ? '✗' : String(v ?? '')}
                 </span>
               </div>
