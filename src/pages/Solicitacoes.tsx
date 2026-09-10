@@ -11,6 +11,7 @@ import {
   type Pipe,
   type Solicitacao,
   type Universal,
+  type Execucao,
 } from '../services/solicitacoes'
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -170,6 +171,14 @@ export function Solicitacoes() {
   const [fila, setFila] = useState<Array<{ acao: string; payload: Record<string, unknown> }>>([])
   const [universais, setUniversais] = useState<Universal[]>([])
 
+  // ── o detalhe por máquina ────────────────────────────────────────────────
+  //
+  // Por universal aberta: quem executou, onde, e o que voltou. Guardado por id
+  // e carregado só quando alguém expande — são até 39 linhas por solicitação, e
+  // ninguém quer todas o tempo todo.
+  const [execucoes, setExecucoes] = useState<Record<number, Execucao[]>>({})
+  const [expandidas, setExpandidas] = useState<number[]>([])
+
   const [ocupado, setOcupado] = useState<string | null>(null)
   const [progresso, setProgresso] = useState<string>('')
   const [erro, setErro] = useState<string | null>(null)
@@ -247,6 +256,25 @@ export function Solicitacoes() {
     }
   }, [sol])
 
+  const carregarExecucoes = useCallback(
+    async (ids: number[]) => {
+      if (!sol || ids.length === 0) return
+      const pares = await Promise.all(
+        ids.map(async (id) => {
+          try {
+            return [id, await sol.listarExecucoes(id)] as const
+          } catch {
+            // Tabela ausente (antes da 0021) ou leitura ruim: some o detalhe
+            // daquela, e o resto do painel segue.
+            return [id, [] as Execucao[]] as const
+          }
+        }),
+      )
+      setExecucoes((m) => ({ ...m, ...Object.fromEntries(pares) }))
+    },
+    [sol],
+  )
+
   const carregarUniversais = useCallback(async () => {
     if (!sol) return
     try {
@@ -255,7 +283,19 @@ export function Solicitacoes() {
       // A view é da 0021. Sem ela, a seção some — e o resto da tela continua.
       setUniversais([])
     }
-  }, [sol])
+    // O que já está aberto na tela é recarregado junto: sem isto o detalhe
+    // congelaria no estado do momento em que foi expandido, enquanto o
+    // contador ao lado continuaria andando.
+    void carregarExecucoes(expandidas)
+  }, [sol, carregarExecucoes, expandidas])
+
+  function alternarDetalhe(id: number) {
+    setExpandidas((atual) => {
+      if (atual.includes(id)) return atual.filter((x) => x !== id)
+      void carregarExecucoes([id])
+      return [...atual, id]
+    })
+  }
 
   useEffect(() => {
     void carregarSessoes()
@@ -923,13 +963,39 @@ export function Solicitacoes() {
                 </div>
               )}
 
-              <button
-                onClick={() => encerrar(u.id)}
-                disabled={!!ocupado}
-                className="bg-zinc-800 hover:bg-zinc-700 disabled:opacity-40 rounded px-3 py-1 text-xs"
-              >
-                Encerrar
-              </button>
+              {/* ── quem executou, onde, e o que voltou ─────────────────── */}
+              {expandidas.includes(u.id) && (
+                <div className="border-t border-zinc-800 pt-2 space-y-1">
+                  {(execucoes[u.id] ?? []).length === 0 ? (
+                    <p className="text-xs text-zinc-600">
+                      Ninguém pegou esta solicitação ainda.
+                    </p>
+                  ) : (
+                    (execucoes[u.id] ?? []).map((e) => (
+                      <LinhaExecucao key={`${e.executor}|${e.maquina}`} e={e} />
+                    ))
+                  )}
+                </div>
+              )}
+
+              <div className="flex gap-2">
+                <button
+                  onClick={() => alternarDetalhe(u.id)}
+                  className="bg-zinc-800 hover:bg-zinc-700 rounded px-3 py-1 text-xs"
+                >
+                  {expandidas.includes(u.id)
+                    ? 'Ocultar quem executou'
+                    : `Ver quem executou (${u.concluidas + u.com_erro})`}
+                </button>
+
+                <button
+                  onClick={() => encerrar(u.id)}
+                  disabled={!!ocupado}
+                  className="bg-zinc-800 hover:bg-zinc-700 disabled:opacity-40 rounded px-3 py-1 text-xs"
+                >
+                  Encerrar
+                </button>
+              </div>
             </div>
           ))}
         </section>
@@ -1053,6 +1119,53 @@ function Campo({
         onChange={(e) => onTexto(e.target.value)}
         className="w-full bg-zinc-900 border border-zinc-700 rounded px-2 py-1 text-sm"
       />
+    </div>
+  )
+}
+
+// ── uma máquina que pegou a universal ────────────────────────────────────────
+//
+// O que o painel não dizia: QUEM executou, ONDE, quanto demorou e o que voltou.
+// O "1/39" respondia só o quantos.
+//
+// O resultado vem colapsado num <details>: é o JSON cru da resposta do Coreon,
+// útil quando se precisa dele e ruído nas outras 38 linhas.
+function LinhaExecucao({ e }: { e: Execucao }) {
+  const cor =
+    e.status === 'concluida' ? 'text-green-400'
+    : e.status === 'erro'    ? 'text-red-400'
+    : 'text-amber-400'
+
+  // Só quando os dois lados existem. Enquanto está executando não há duração —
+  // e mostrar "0s" ali seria inventar um número.
+  const ms =
+    e.terminado_em && e.iniciado_em
+      ? new Date(e.terminado_em).getTime() - new Date(e.iniciado_em).getTime()
+      : null
+
+  return (
+    <div className="text-xs bg-zinc-950/60 rounded px-2 py-1.5 space-y-1">
+      <div className="flex items-center gap-2 flex-wrap">
+        <span className={cor}>●</span>
+        <span className="font-mono">{e.executor || '(sem usuário)'}</span>
+        <span className="text-zinc-600">·</span>
+        <span className="text-zinc-500">{e.maquina || '(sem máquina)'}</span>
+        <span className={`ml-auto ${cor}`}>{e.status}</span>
+        {ms != null && <span className="text-zinc-600">{(ms / 1000).toFixed(1)}s</span>}
+      </div>
+
+      {e.erro && <div className="text-red-400 font-mono break-all">{e.erro}</div>}
+
+      {e.resultado != null && (
+        <details>
+          <summary className="cursor-pointer text-zinc-600 hover:text-zinc-400">
+            resultado
+          </summary>
+          <pre className="mt-1 whitespace-pre-wrap break-all text-zinc-400">
+            {JSON.stringify(e.resultado, null, 2)}
+          </pre>
+        </details>
+      )}
     </div>
   )
 }

@@ -87,6 +87,26 @@ export interface Universal {
   faltam: string[]
 }
 
+// ── uma execução, de uma máquina ───────────────────────────────────────────
+//
+// A view `solicitacoes_universais` só CONTA. Quem executou, em qual máquina,
+// quanto demorou e o que voltou está na tabela `solicitacoes_execucoes`, uma
+// linha por máquina — e ela nunca era lida daqui.
+//
+// "1/39" responde quantos; não responde quem, nem o quê. Numa ação que roda em
+// 39 máquinas, saber que uma terminou sem saber qual e com que resposta é
+// quase não saber nada.
+export interface Execucao {
+  solicitacao_id: number
+  executor: string
+  maquina: string
+  status: StatusSolicitacao
+  resultado: unknown
+  erro: string | null
+  iniciado_em: string
+  terminado_em: string | null
+}
+
 /**
  * Terminou (para o bem ou para o mal) — nada mais vai mudar sozinho.
  *
@@ -353,6 +373,27 @@ export class SolicitacoesService {
       concluidas: Number(r.concluidas ?? 0),
       com_erro: Number(r.com_erro ?? 0),
       faltam: Array.isArray(r.faltam) ? (r.faltam as string[]) : [],
+    }))
+  }
+
+  /** Uma linha por máquina que pegou esta universal. Ver a nota em Execucao. */
+  async listarExecucoes(solicitacaoId: number): Promise<Execucao[]> {
+    const rows = await this.svc.lerLinhas('solicitacoes_execucoes', {
+      filtros: `solicitacao_id=eq.${solicitacaoId}`,
+      // Mais recente primeiro: quem ainda está executando sobe para o topo,
+      // que é o que está acontecendo agora.
+      order: 'iniciado_em.desc',
+      limit: 200,
+    })
+    return rows.map((r) => ({
+      solicitacao_id: Number(r.solicitacao_id ?? 0),
+      executor: String(r.executor ?? ''),
+      maquina: String(r.maquina ?? ''),
+      status: (r.status as StatusSolicitacao) ?? 'executando',
+      resultado: r.resultado ?? null,
+      erro: (r.erro as string) ?? null,
+      iniciado_em: String(r.iniciado_em ?? ''),
+      terminado_em: (r.terminado_em as string) ?? null,
     }))
   }
 
