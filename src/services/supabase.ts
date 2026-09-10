@@ -152,6 +152,11 @@ export function buildCentroRow(centro: string, c: Row): Row {
 export function buildUsuarioRow(username: string, u: Row): Row {
   return {
     username,
+    // 'nome' chegou na 0011 e nunca foi mapeado aqui — a tela não o mostrava
+    // nem o gravava. Não era destrutivo (o upsert do PostgREST só toca as
+    // colunas presentes no corpo, então a ausência PRESERVAVA o valor), mas
+    // deixava a coluna invisível e ineditável pelo LNF-web.
+    nome: u.nome == null ? null : String(u.nome),
     centros: arr(u.centros),
     nivel_adm: numOr0(u.nivelAdm),
     acessos: obj(u.acessos),
@@ -210,11 +215,21 @@ function centroRowToLegacy(r: Row): Row {
     // upsert do PostgREST só toca as colunas presentes no corpo, então omiti-la
     // PRESERVA o que está lá. Quem edita empresa é a tela de centros do Coreon.
     Empresa: String(r.empresa ?? ''),
+
+    // Os caminhos de impressora Zebra do centro, também da 0011 e também
+    // nunca mapeados. Vêm para a tela poder MOSTRAR o que está configurado.
+    //
+    // Como o Empresa, o buildCentroRow NÃO os envia — e pelo mesmo motivo,
+    // que aqui pesa mais: é configuração de máquina, escrita pela tela de
+    // centros do Coreon, e um round-trip por um formulário genérico teria
+    // tudo para achatá-la. Omitir do corpo faz o upsert preservar.
+    ZebraCaminhos: r.zebra_caminhos ?? [],
   }
 }
 
 function usuarioRowToLegacy(r: Row): Row {
   return {
+    nome: String(r.nome ?? ''),
     centros: arr(r.centros),
     nivelAdm: numOr0(r.nivel_adm),
     acessos: obj(r.acessos),
