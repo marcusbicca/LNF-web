@@ -275,3 +275,106 @@ export function sugerirConv(
     ? { fator: 1 / f, umbsIguais: false, de: umbNf, para: umbPedido }
     : { fator: f, umbsIguais: false, de: umbPedido, para: umbNf }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// O TESTE DA INVERSÃO
+//
+// ── por que ele existe ──────────────────────────────────────────────────────
+// Na migração do VBA para o C#, toda conversão UNIVERSAL foi gravada como
+// 1/conversão. Parte foi corrigida à mão; parte não, e não há lista de quem é
+// quem. O sintoma é sempre o mesmo: aplicado o fator cadastrado, a quantidade
+// sai fracionada (0,0833 em vez de 12), o item vira excedente, ou o valor não
+// fecha.
+//
+// ── por que ISTO é evidência, e "derivar um fator que feche" não é ──────────
+// Com uma observação sempre existe ALGUM fator que faz a conta fechar — achá-lo
+// é aritmética, não descoberta. Aqui não há nada a ajustar: 1/f é um candidato
+// ÚNICO, determinado pelo cadastro que já existe. E ele é conferido por duas
+// contas independentes — a quantidade contra o saldo e o valor contra o do
+// pedido. Duas contas fechando num candidato que não foi escolhido para fechar
+// é evidência de verdade.
+//
+// Por isso esta função responde 'invertida' apenas quando o fator atual FALHA
+// nas duas e o invertido ACERTA nas duas. Meio acerto não é resposta: pode ser
+// entrega parcial junto de reajuste, que é outro assunto.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface DadosDaNota {
+  qtdNf: number
+  qtdSaldo: number
+  valorNf: number
+  valorPedido: number
+  umbNf: string
+  umbPedido: string
+}
+
+export type VeredictoInversao = 'invertida' | 'atual-ok' | 'inconclusivo' | 'sem-conversao'
+
+export interface Inversao {
+  veredicto: VeredictoInversao
+  /** Índice da conversão que venceu — a que seria invertida. */
+  indice: number
+  conversaoAtual: number
+  conversaoInvertida: number
+  /** O fator gravado hoje e o que ele viraria. Já na forma que vai ao cadastro. */
+  fatorAtual: number
+  fatorNovo: number
+  atual: { qtdSap: number; valorConv: number; fechaQtd: boolean; fechaValor: boolean }
+  invertida: { qtdSap: number; valorConv: number; fechaQtd: boolean; fechaValor: boolean }
+}
+
+export function testarInversao(
+  convs: ConvEditavel[],
+  d: DadosDaNota,
+  tolValorItem = 0.5,
+): Inversao | null {
+  const venc = resolverConv(convs, d.umbNf, d.umbPedido)
+  if (!venc) return null
+
+  const alvo = convs[venc.indice]
+  if (!alvo || !(alvo.fator > 0)) return null
+
+  // A conta é a do ExecutarService: qtdSAP = qtdNF / conversao e
+  // valor convertido = valorNF × conversao. Invertida troca as duas de lado.
+  const avaliar = (conversao: number) => {
+    const qtdSap = conversao !== 0 ? d.qtdNf / conversao : d.qtdNf
+    const valorConv = d.valorNf * conversao
+    return {
+      qtdSap,
+      valorConv,
+      // Quantidade "fecha" quando bate com o saldo. A folga é relativa porque
+      // conversão é divisão: 11,999999 veio de dividir, não de faltar item.
+      fechaQtd: d.qtdSaldo > 0 && Math.abs(qtdSap - d.qtdSaldo) <= Math.max(1e-6, d.qtdSaldo * 1e-6),
+      // Valor usa a MESMA régua do Executar: a diferença multiplicada pela
+      // quantidade, contra a tolerância do item.
+      fechaValor: Math.abs((valorConv - d.valorPedido) * qtdSap) <= tolValorItem,
+    }
+  }
+
+  const conversaoAtual = venc.conversao
+  const conversaoInvertida = conversaoAtual !== 0 ? 1 / conversaoAtual : 1
+
+  const atual = avaliar(conversaoAtual)
+  const invertida = avaliar(conversaoInvertida)
+
+  const veredicto: VeredictoInversao =
+    atual.fechaQtd && atual.fechaValor
+      ? 'atual-ok'
+      : !atual.fechaQtd && !atual.fechaValor && invertida.fechaQtd && invertida.fechaValor
+        ? 'invertida'
+        : 'inconclusivo'
+
+  return {
+    veredicto,
+    indice: venc.indice,
+    conversaoAtual,
+    conversaoInvertida,
+    fatorAtual: alvo.fator,
+    // O que vai para o cadastro é 1/fator, e não 1/conversao: nos sentidos
+    // direcionais o resolverConv já inverte uma vez (dirA devolve 1/f), e
+    // inverter o resultado dele gravaria o fator de volta como estava.
+    fatorNovo: 1 / alvo.fator,
+    atual,
+    invertida,
+  }
+}
