@@ -4,7 +4,14 @@ import { QuemPediu } from '../components/QuemPediu'
 import { SupabaseService } from '../services/supabase'
 import type { CadastroJson, FatorEntry, ItensJson, PedidoItem } from '../types'
 import { format, parseLenient } from '../utils/json'
-import { convToJson, reconstruirConv, sugerirConv } from '../utils/conversao'
+import {
+  convToJson,
+  normalizarUmb,
+  reconstruirConv,
+  resolverConv,
+  sugerirConv,
+  type ConvEditavel,
+} from '../utils/conversao'
 import { ConversoesPendentes } from '../components/ConversoesPendentes'
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -255,14 +262,15 @@ function sortCb2(list: ItemPedido[], ref: ItemNf | null): ItemPedido[] {
   })
 }
 
-// Runtime "conversao" a partir do campo fator + orientação de/para.
-function conversaoRuntime(fator: number, umbsIguais: boolean, de: string, umbNf: string): number {
-  if (fator <= 0) return 1
-  if (umbsIguais) return fator
-  // dirA: de == fromUMB (NF) → 1/f ; dirB: de == toUMB (Ped) → f
-  if (de.trim().toLowerCase() === umbNf.toLowerCase()) return fator !== 0 ? 1 / fator : 1
-  return fator
-}
+// (Aqui morava um conversaoRuntime próprio — a TERCEIRA cópia da regra que
+//  decide qual conversão vale. Ela tinha ficado para trás em três pontos:
+//  ignorava padraoOrigem, comparava com toLowerCase em vez da forma canônica
+//  — então "CX." e "CX" eram unidades diferentes e o fator saía invertido —, e
+//  aceitava dirB sem conferir o 'para', simulando conversão que o Coreon não
+//  faria. Agora quem responde é o resolverConv, o mesmo que a tela de
+//  conversões suspeitas usa. O comentário no topo de utils/conversao.ts já
+//  avisava que duas cópias divergiriam na primeira correção; esta era a
+//  terceira.)
 
 // Procura a chave (case-insensitive) do fornecedor no itens.json.
 function acharFornecedorKey(itens: ItensJson, fornecedor: string): string | null {
@@ -308,10 +316,13 @@ function aplicarVinculos(base: ItensJson, fornecedorDefault: string, vinculos: V
     // Fator 1 não é gravado: a referência é criada com lista vazia.
     const convs: FatorEntry[] = []
     if (Math.abs(v.fator - 1) > 1e-9 && v.fator > 0) {
+      // normalizarUmb na GRAVAÇÃO, igual ao convsToJson: é aqui que se impede
+      // uma "CX." nova de nascer. Sem isto, esta tela continuava sendo uma
+      // porta de entrada para o lixo que o UmbUtils tem de limpar na leitura.
       convs.push(
         v.umbsIguais
           ? convToJson('', '', v.fator)
-          : convToJson(v.de, v.para, v.fator),
+          : convToJson(normalizarUmb(v.de), normalizarUmb(v.para), v.fator),
       )
     }
 
@@ -420,7 +431,12 @@ export function Mapeamento() {
 
   const umbNf = umbBase(cb1Sel?.umbForn ?? '')
   const umbPed = umbBase(cb2Sel?.umbPed ?? '')
-  const umbsIguais = !!cb1Sel && !!cb2Sel && umbNf.toLowerCase() === umbPed.toLowerCase()
+  // Forma canônica dos dois lados, e não toLowerCase: o Coreon compara com
+  // UmbUtils.Iguais, então para ele "CX." e "CX" são a mesma unidade. Com a
+  // comparação frouxa aqui, a tela via unidades DIFERENTES, mostrava de/para e
+  // gravava uma direcional onde o certo era universal.
+  const umbsIguais =
+    !!cb1Sel && !!cb2Sel && normalizarUmb(umbNf) === normalizarUmb(umbPed)
   const mostrarDePara = !!cb1Sel && !!cb2Sel && !umbsIguais
 
   // ── Parse do JSON ──────────────────────────────────────────────────────────
@@ -683,16 +699,31 @@ export function Mapeamento() {
   }, [cb1SelId, cb2SelId])
 
   // ── Conversão calculada ────────────────────────────────────────────────────
+  //
+  // A conversão em edição vira uma lista de um elemento e passa pelo MESMO
+  // resolverConv que o Coreon espelha. O 'para' entra junto: sem ele, dirB
+  // casava por omissão e a tela prometia uma conversão que o ExecutarService
+  // não faria.
   const conv = useMemo(() => {
     if (!cb1Sel || !cb2Sel) return null
     const f = parseNum(fator)
-    const conversao = conversaoRuntime(f, umbsIguais, de, umbNf)
+
+    const emEdicao: ConvEditavel[] = [
+      umbsIguais
+        ? { fator: f, umbsIguais: true, de: '', para: '' }
+        : { fator: f, umbsIguais: false, de: de.trim(), para: para.trim() },
+    ]
+
+    // Sem casamento, o runtime não converte nada — e é isso que a tela tem de
+    // mostrar, em vez de aplicar o fator assim mesmo.
+    const conversao = resolverConv(emEdicao, umbNf, umbPed)?.conversao ?? 1
+
     const qtdSAP = conversao !== 0 ? cb1Sel.qtdNF / conversao : cb1Sel.qtdNF
     const valorNfConv = cb1Sel.valorUNNF * conversao
     const valorPed = cb2Sel.valorUN
     const dif = Math.abs((valorNfConv - valorPed) * qtdSAP)
     return { valorNfConv, valorPed, qtdNfConv: qtdSAP, diverge: dif > 0.5 }
-  }, [cb1Sel, cb2Sel, fator, de, umbsIguais, umbNf])
+  }, [cb1Sel, cb2Sel, fator, de, para, umbsIguais, umbNf, umbPed])
 
   // ── Ações de conversão ─────────────────────────────────────────────────────
   function swapDePara() {
