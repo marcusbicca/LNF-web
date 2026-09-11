@@ -302,16 +302,31 @@ function descricaoDoItem(c: Caso, itens: ItensJson | null): string {
 // converte. Com os dois lados na mesma unidade e a quantidade já dividida,
 // "Sugerir" produzia um fator sobre um número convertido, na forma UNIVERSAL.
 //
-// A assinatura da linha velha é exata: o código antigo atribuía a MESMA
-// variável a qtd_nf e a qtd_convertida. Depois da correção elas sempre diferem
-// — um caso de unidade só existe porque um fator foi aplicado.
+// ── e por que o teste NÃO é mais "as duas quantidades são iguais" ──────────
 //
-// Detectar pelo dado, e não por uma coluna de versão, é o que faz isto valer
-// para as linhas que já estão no banco.
+// Era `qtd_nf === qtd_convertida`, com o raciocínio de que "depois da correção
+// elas sempre diferem, porque um caso de unidade só existe se um fator foi
+// aplicado". A premissa é falsa, e o contraexemplo é banal: **fator 1**.
+//
+// Cadastro com fator 1 existe e é útil — ele não muda a quantidade, serve para
+// trocar a UMB, e o ProcessarConversao põe o asterisco do mesmo jeito. Nessa
+// linha o lado cru FOI guardado direito e mesmo assim as duas quantidades
+// batem, porque dividir por 1 não muda nada. O painel então acusava
+// "registrada antes da correção" numa linha nova e completa, e desabilitava o
+// Sugerir sem motivo nenhum.
+//
+// Agora o teste é o SINAL EXATO, que já viajava no payload e ninguém lia. O
+// Descarregar do SolicitacaoUmbMigoService grava:
+//
+//     Conversao = v != null ? v.Conversao : ""
+//
+// onde `v` é o lado cru. Coluna vazia é, POR CONSTRUÇÃO, "não havia lado cru"
+// — e cobre os dois casos de uma vez: linha velha (a coluna nem era gravada) e
+// linha nova cujo lado cru se perdeu no caminho. Nada de inferir a partir dos
+// números; a resposta já estava escrita.
 function semLadoCru(c: Caso): boolean {
   if (!c.ehUmbMigo) return false
-  if (!Number.isFinite(c.qtdConvertida) || c.qtdConvertida === 0) return false
-  return Math.abs(c.qtdNf - c.qtdConvertida) < 1e-9
+  return c.conversaoNaEpoca.trim() === ''
 }
 
 function concordam(c: Caso): boolean {
@@ -1170,15 +1185,15 @@ export function ConversoesPendentes() {
                     Esta linha não tem o lado cru da NF.
                   </div>
                   <p className="text-zinc-400">
-                    Ela foi registrada antes da correção do Coreon: o campo da quantidade guarda
-                    o valor <em>já convertido</em> ({num(sel.qtdConvertida)}), e a unidade da NF
-                    chegou como a do pedido. Por isso o <strong>Sugerir</strong> está
-                    desabilitado — daqui ele calcularia um fator sobre um número convertido, e
-                    sairia universal.
+                    O campo da quantidade guarda o valor <em>já convertido</em> (
+                    {num(sel.qtdConvertida)}), e a unidade da NF chegou como a do pedido. Por
+                    isso o <strong>Sugerir</strong> está desabilitado — daqui ele calcularia um
+                    fator sobre um número convertido, e sairia universal.
                   </p>
                   <p className="text-zinc-500">
-                    Dá para corrigir mesmo assim: use as unidades e as quantidades da nota, que
-                    estão no SAP ou no XML. Casos novos deste material já virão completos.
+                    Acontece com linha registrada antes da correção do Coreon, e também com
+                    linha nova cujo lado cru não chegou. Dá para corrigir mesmo assim: use as
+                    unidades e as quantidades da nota, que estão no SAP ou no XML.
                   </p>
                 </div>
               )}
@@ -1478,7 +1493,7 @@ export function ConversoesPendentes() {
                           className="px-2 py-1 rounded bg-zinc-800 hover:bg-zinc-700 disabled:opacity-40 disabled:cursor-not-allowed"
                           title={
                             semLadoCru(sel)
-                              ? 'Esta linha foi registrada antes da correção: ela guarda a quantidade JÁ CONVERTIDA, não a da nota. Sugerir daqui daria um fator sobre um número convertido — e universal, porque as duas unidades chegaram iguais. Use os números da nota.'
+                              ? 'Esta linha não trouxe o lado cru da NF: ela guarda a quantidade JÁ CONVERTIDA, não a da nota. Sugerir daqui daria um fator sobre um número convertido — e universal, porque as duas unidades chegaram iguais. Use os números da nota.'
                               : 'Preenche fator e unidades pela NF e pelo saldo — mesma regra do botão Sugerir do mapeamento.'
                           }
                         >
