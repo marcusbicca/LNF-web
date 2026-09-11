@@ -1140,7 +1140,6 @@ function Importar({ onCarregar }: { onCarregar: (e: EstadoLancamento) => void })
 
     if (!alvo) return setErro('Informe o usuário Windows da máquina que vai rodar.')
     if (chaveLimpa.length !== 44) return setErro('A chave da NF precisa ter 44 dígitos.')
-    if (pedidos.length === 0) return setErro('Informe ao menos um pedido.')
 
     setErro(null)
     setOcupado('analisar')
@@ -1158,7 +1157,16 @@ function Importar({ onCarregar }: { onCarregar: (e: EstadoLancamento) => void })
         { acao: 'baixar_xml_internet', payload: { Chave: chaveLimpa }, ...comum },
         {
           acao: 'executar',
-          payload: { PedidosPorNfUsuario: { [chaveLimpa]: pedidos } },
+          // PedidosPorNfUsuario só vai quando há o que mandar.
+          //
+          // No Coreon a precedência é usuário > XML: informado, ele vence;
+          // vazio, o PedidosBuscaService tira os pedidos do próprio XML. Um
+          // dicionário com lista vazia NÃO é "deixa o XML decidir" — é uma
+          // entrada preenchida com nada, e o campo existe para SOBREPOR.
+          payload:
+            pedidos.length > 0
+              ? { PedidosPorNfUsuario: { [chaveLimpa]: pedidos } }
+              : {},
           ...comum,
         },
       ])
@@ -1241,12 +1249,12 @@ function Importar({ onCarregar }: { onCarregar: (e: EstadoLancamento) => void })
               </label>
               <label className="block">
                 <span className="block text-[11px] text-zinc-500 mb-0.5">
-                  Pedidos (separados por espaço ou vírgula)
+                  Pedidos <span className="text-zinc-600">(opcional — sobrepõe o XML)</span>
                 </span>
                 <input
                   value={pedidosTxt}
                   onChange={(e) => setPedidosTxt(e.target.value)}
-                  placeholder="4500123456 4500123457"
+                  placeholder="em branco = usa os do XML"
                   className="w-full bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:border-green-500"
                 />
               </label>
@@ -1286,8 +1294,14 @@ function Importar({ onCarregar }: { onCarregar: (e: EstadoLancamento) => void })
             <p className="text-[11px] text-zinc-600">
               Baixa a NF e roda um Executar <strong>novo</strong> naquela máquina, em sessão
               própria — o trabalho de quem estiver sentado lá não é tocado, nada é escrito na
-              planilha dele e <strong>nada é lançado</strong>: só análise. Em branco, a senha
-              SAP faz o Executar usar o login que já está validado na máquina.
+              planilha dele e <strong>nada é lançado</strong>: só análise.
+            </p>
+            <p className="text-[11px] text-zinc-600">
+              Os pedidos são <strong>opcionais</strong>: vazio, o Coreon usa os que estiverem
+              no próprio XML; preenchidos, eles vencem. Não havendo nem um nem outro, a
+              resposta volta com <span className="font-mono">PEDIDO_NAO_INFORMADO</span> —
+              que também é um resultado útil. A senha SAP em branco faz o Executar usar o
+              login já validado na máquina.
             </p>
           </div>
 
