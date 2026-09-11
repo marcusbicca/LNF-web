@@ -357,6 +357,7 @@ export function Mapeamento() {
   const [verFinalizados, setVerFinalizados] = useState(false)
   const [notaCasos, setNotaCasos] = useState<string | null>(null)
   const [casoSelNf, setCasoSelNf] = useState<string | null>(null)
+  const [casoSelQuem, setCasoSelQuem] = useState<{ usuario: string; centro: string } | null>(null)
 
   // Dados de trabalho
   const [fornecedor, setFornecedor] = useState('')
@@ -558,6 +559,7 @@ export function Mapeamento() {
   }
 
   function limpar() {
+    setCasoSelQuem(null)
     setJsonTexto('')
     setErroJson(null)
     setCarregado(false)
@@ -626,6 +628,13 @@ export function Mapeamento() {
     const payload = (caso.payload ?? {}) as CadastroJson
     carregarCadastro(payload)
     setCasoSelNf(caso.nf_chaves != null ? String(caso.nf_chaves) : null)
+    // Quem pediu viaja junto com o caso. Ficava só na lista, e a lista sai de
+    // vista assim que se começa a trabalhar — justamente quando a origem
+    // passa a importar ("esse centro é o que sempre manda ref errada").
+    setCasoSelQuem({
+      usuario: caso.usuario == null ? '' : String(caso.usuario),
+      centro: caso.centro == null ? '' : String(caso.centro),
+    })
   }
 
   // Finaliza o caso selecionado (status único: pendente → finalizado).
@@ -997,6 +1006,11 @@ export function Mapeamento() {
       <div className="flex justify-between items-center gap-3">
         <div className="min-w-0">
           <h2 className="font-semibold truncate">Mapeamento · {fornecedor || '(sem fornecedor)'}</h2>
+          {casoSelQuem && (
+            <div className="mt-0.5">
+              <QuemPediu usuario={casoSelQuem.usuario} centro={casoSelQuem.centro} />
+            </div>
+          )}
         </div>
         <div className="flex items-center gap-2 shrink-0">
           {casoSelNf != null && (

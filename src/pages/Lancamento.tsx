@@ -30,6 +30,10 @@
 //    problema — sem tirar nenhuma das cores de célula que já existiam.
 // ─────────────────────────────────────────────────────────────────────────────
 import { useEffect, useMemo, useState } from 'react'
+import { useApp } from '../context/AppContext'
+import { SupabaseService } from '../services/supabase'
+import { SolicitacoesService, novaSessaoId } from '../services/solicitacoes'
+import { deUltimoExecutar } from '../services/ultimoExecutar'
 import { nfDeExemplo } from '../mocks/lancamento'
 import {
   MARCAS_PEDIDO,
@@ -102,11 +106,24 @@ function problemasDaLinha(
 }
 
 export function Lancamento() {
-  const nf: EstadoLancamento = nfDeExemplo
+  // O mock deixa de ser o dado e passa a ser o VALOR INICIAL. É o que permite
+  // a tela continuar demonstrável sem nada conectado, e ser substituída
+  // inteira quando uma resposta de verdade chega.
+  const [nf, setNf] = useState<EstadoLancamento>(nfDeExemplo)
 
   const [itens, setItens] = useState<ItemLancamento[]>(nf.itens)
   const [pedidos, setPedidos] = useState<string[]>(nf.pedidos.filter((p) => p !== ''))
   const [chave, setChave] = useState('')
+
+  // Trocar a NF reinicia o que é editável: os campos da grade são cópia de
+  // trabalho, e manter a edição da nota anterior por cima da nova seria
+  // misturar duas notas na mesma tela.
+  function carregar(novo: EstadoLancamento) {
+    setNf(novo)
+    setItens(novo.itens)
+    setPedidos(novo.pedidos.filter((p) => p !== ''))
+    setChave(novo.chaveNf)
+  }
   const [feedbackAberto, setFeedbackAberto] = useState(false)
   const [dadosAbertos, setDadosAbertos] = useState(false)
   const [expandida, setExpandida] = useState(false)
@@ -152,6 +169,8 @@ export function Lancamento() {
         expandida ? '' : 'lg:h-full lg:overflow-hidden'
       }`}
     >
+      <Importar onCarregar={carregar} />
+
       <Topo
         chave={chave}
         onChave={setChave}
@@ -1011,5 +1030,234 @@ function BlocoDivergencia({ titulo, children }: { titulo: string; children: Reac
       <h3 className="text-xs font-medium text-amber-300 mb-1.5">{titulo}</h3>
       <ul className="space-y-1">{children}</ul>
     </div>
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Importar o último Executar de alguém
+//
+// Dois caminhos, e os dois existem porque falham por motivos diferentes.
+//
+// COLAR funciona sempre: offline, sem sessão, sem a máquina do outro estar
+// ligada. É também o caminho de quem já tem a resposta em mãos — da aba
+// Respostas, de um log, de uma conversa.
+//
+// BUSCAR é a conveniência, e depende de a máquina estar acordada. São dois
+// passos numa sequência só (iniciar_sessao + get_ultimo_executar), porque o
+// Coreon recusa qualquer ação num sessao_id que ele não abriu — e no lote, se
+// a abertura falhar, o segundo passo nem chega a ser reservado.
+//
+// O canal remoto consulta 1x/min enquanto há janela aberta, então a espera
+// normal é de dezenas de segundos. Não é lentidão da tela.
+// ─────────────────────────────────────────────────────────────────────────────
+function Importar({ onCarregar }: { onCarregar: (e: EstadoLancamento) => void }) {
+  const { config } = useApp()
+  const sol = useMemo(() => {
+    if (!config) return null
+    return new SolicitacoesService(new SupabaseService(config), config.usuario ?? '')
+  }, [config])
+
+  const [aberto, setAberto] = useState(false)
+  const [texto, setTexto] = useState('')
+  const [destinatario, setDestinatario] = useState('')
+  const [ocupado, setOcupado] = useState<string | null>(null)
+  const [progresso, setProgresso] = useState('')
+  const [erro, setErro] = useState<string | null>(null)
+  const [avisos, setAvisos] = useState<string[]>([])
+
+  // Uma resposta multi-NF traz várias; guardadas aqui para trocar sem refazer
+  // a viagem, que é cara.
+  const [bruto, setBruto] = useState<unknown>(null)
+  const [chaves, setChaves] = useState<string[]>([])
+  const [chaveSel, setChaveSel] = useState('')
+
+  function aplicar(b: unknown, chaveEscolhida?: string) {
+    setErro(null)
+    try {
+      const { estado, chaves: cs, avisos: av } = deUltimoExecutar(b, { chaveEscolhida })
+      setBruto(b)
+      setChaves(cs)
+      setChaveSel(estado.chaveNf)
+      setAvisos(av)
+      onCarregar(estado)
+      return true
+    } catch (e) {
+      setErro((e as Error).message)
+      return false
+    }
+  }
+
+  function colar() {
+    const t = texto.trim()
+    if (!t) return
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(t)
+    } catch (e) {
+      setErro('JSON inválido: ' + (e as Error).message)
+      return
+    }
+    if (aplicar(parsed)) setAberto(false)
+  }
+
+  async function buscar() {
+    if (!sol) {
+      setErro('Configure o transporte em Configurações.')
+      return
+    }
+    const alvo = destinatario.trim()
+    if (!alvo) {
+      setErro('Informe o usuário Windows da máquina de onde vem o Executar.')
+      return
+    }
+
+    setErro(null)
+    setOcupado('buscar')
+    setProgresso('Abrindo sessão na máquina…')
+
+    try {
+      const sessaoId = novaSessaoId(config?.usuario ?? '')
+
+      // Sequência, e não dois envios: no lote o segundo passo só é liberado
+      // quando o primeiro conclui, e só para a MESMA máquina que pegou o
+      // primeiro. É o que garante que o get_ultimo_executar leia a memória
+      // daquele Coreon, e não a de outro que estivesse de olho na fila.
+      await sol.criarSequencia(sessaoId, [
+        { acao: 'iniciar_sessao', payload: { IncluirPipes: false }, destinatario: alvo },
+        { acao: 'get_ultimo_executar', payload: {}, destinatario: alvo },
+      ])
+
+      setProgresso('Aguardando a máquina responder (consulta 1x/min)…')
+
+      const resp = await sol.aguardarNaSessao(sessaoId, 'get_ultimo_executar', 0, {
+        timeoutMs: 6 * 60 * 1000,
+        onTick: (s) => {
+          if (s?.status) setProgresso(`Aguardando… (${s.status})`)
+        },
+      })
+
+      if (resp.erro) {
+        setErro(resp.erro)
+        return
+      }
+      if (aplicar(resp.resultado)) setAberto(false)
+    } catch (e) {
+      setErro((e as Error).message)
+    } finally {
+      setOcupado(null)
+      setProgresso('')
+    }
+  }
+
+  return (
+    <section className="shrink-0 bg-zinc-950 border border-zinc-800 rounded-xl">
+      <div className="flex flex-wrap items-center gap-2 p-3">
+        <button
+          onClick={() => setAberto((v) => !v)}
+          className="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded-lg text-sm transition-colors"
+        >
+          Importar Executar {aberto ? '▴' : '▾'}
+        </button>
+
+        {chaves.length > 1 && (
+          <label className="flex items-center gap-2 text-xs text-zinc-400">
+            NF:
+            <select
+              value={chaveSel}
+              onChange={(e) => {
+                setChaveSel(e.target.value)
+                aplicar(bruto, e.target.value)
+              }}
+              className="bg-zinc-900 border border-zinc-700 rounded px-2 py-1 text-xs font-mono focus:outline-none focus:border-green-500"
+            >
+              {chaves.map((c) => (
+                <option key={c} value={c}>
+                  {c}
+                </option>
+              ))}
+            </select>
+            <span className="text-zinc-600">{chaves.length} na resposta</span>
+          </label>
+        )}
+
+        {progresso && <span className="text-xs text-amber-300">{progresso}</span>}
+        {avisos.length > 0 && !progresso && (
+          <span className="text-xs text-amber-400">{avisos.join(' · ')}</span>
+        )}
+      </div>
+
+      {aberto && (
+        <div className="border-t border-zinc-800 p-3 space-y-4">
+          <div className="space-y-2">
+            <h3 className="text-[11px] uppercase tracking-wide text-zinc-500">
+              Buscar de uma máquina
+            </h3>
+            <div className="flex flex-wrap gap-2">
+              <input
+                value={destinatario}
+                onChange={(e) => setDestinatario(e.target.value)}
+                placeholder="usuário Windows (ex.: israel.santos)"
+                className="flex-1 min-w-[14rem] bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:border-green-500"
+              />
+              <button
+                onClick={buscar}
+                disabled={!!ocupado}
+                className="px-4 py-2 bg-green-700 hover:bg-green-600 disabled:opacity-40 text-white rounded-lg text-sm font-medium transition-colors"
+              >
+                {ocupado === 'buscar' ? 'Buscando…' : 'Buscar'}
+              </button>
+            </div>
+            <p className="text-[11px] text-zinc-600">
+              Abre uma sessão naquela máquina e pede o último Executar que está na memória
+              dela. Ela precisa estar com o Lançador aberto; a resposta costuma levar de
+              alguns segundos a um minuto.
+            </p>
+          </div>
+
+          <div className="space-y-2">
+            <h3 className="text-[11px] uppercase tracking-wide text-zinc-500">
+              Ou colar a resposta
+            </h3>
+            <textarea
+              value={texto}
+              onChange={(e) => setTexto(e.target.value)}
+              spellCheck={false}
+              rows={6}
+              placeholder='{"Sucesso":true,"Nfs":{…},"PedidosDict":{…}}'
+              className="w-full bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-2 text-xs font-mono focus:outline-none focus:border-green-500"
+            />
+            <div className="flex gap-2">
+              <button
+                onClick={colar}
+                disabled={!texto.trim()}
+                className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 disabled:opacity-40 rounded-lg text-sm transition-colors"
+              >
+                Carregar
+              </button>
+              <button
+                onClick={() => {
+                  setTexto('')
+                  setErro(null)
+                }}
+                className="px-3 py-2 text-zinc-500 hover:text-zinc-300 text-sm transition-colors"
+              >
+                Limpar
+              </button>
+            </div>
+            <p className="text-[11px] text-zinc-600">
+              Aceita o corpo da resposta do <span className="font-mono">get_ultimo_executar</span>{' '}
+              ou a linha inteira da aba Respostas (o campo{' '}
+              <span className="font-mono">resultado</span> é desembrulhado sozinho).
+            </p>
+          </div>
+
+          {erro && (
+            <div className="rounded-lg border border-red-800/70 bg-red-950/30 px-3 py-2 text-sm text-red-200 break-words">
+              {erro}
+            </div>
+          )}
+        </div>
+      )}
+    </section>
   )
 }

@@ -10,6 +10,7 @@ import {
   explicarMotivo,
   reconstruirConvs,
   resolverConv,
+  testarInversao,
   sugerirConv,
   type ConvEditavel,
 } from '../utils/conversao'
@@ -343,7 +344,7 @@ export function ConversoesPendentes() {
   // parecer a outra.
   const [umbMigo, setUmbMigo] = useState('')
 
-  const chave = (c: Caso) => `${c.fornecedor} ${c.codigo} ${c.referencia} ${c.tipo}`
+  const chave = (c: Caso) => `${c.fornecedor}\u0000${c.codigo}\u0000${c.referencia}\u0000${c.tipo}`
   const sel = useMemo(() => casos.find(c => chave(c) === selId) ?? null, [casos, selId])
 
   const carregar = useCallback(async () => {
@@ -364,9 +365,19 @@ export function ConversoesPendentes() {
     }
   }, [svc])
 
+  // ── o gate é TRANSPORTE, não paUrl ────────────────────────────────────────
+  //
+  // Era `config?.paUrl && aberto`, e ficou para trás quando a Edge Function
+  // entrou: com ela configurada o paUrl fica VAZIO, e o painel simplesmente
+  // nunca carregava — mostrando "Nenhum cadastro suspeito pendente" para uma
+  // fila cheia. Falha caladíssima: a tela existe, abre, e mente.
+  //
+  // Mesma condição que o AppContext e o Mapeamento já usam.
+  const temTransporte = !!(config?.edgeUrl || config?.paUrl)
+
   useEffect(() => {
-    if (config?.paUrl && aberto) void carregar()
-  }, [config?.paUrl, aberto, carregar])
+    if (temTransporte && aberto) void carregar()
+  }, [temTransporte, aberto, carregar])
 
   // ── encerrar sozinho o que já foi corrigido por fora ──────────────────────
   //
@@ -574,6 +585,44 @@ export function ConversoesPendentes() {
     // tela mostraria vermelho num caso que ela mesma acabou de arquivar.
     return { venc, conversao, qtdSap, valorConv, dif, diverge: dif > TOL_VALOR_ITEM }
   }, [convs, simQtd, simValorNf, simValorPed, simUmbNf, simUmbPed])
+
+  // ── qual MÉTODO de conserto está em foco ──────────────────────────────────
+  //
+  // O 'tipo' da solicitação é o SINTOMA que o Coreon viu, não o diagnóstico.
+  // Uma conversão universal invertida aparece como 'umb_migo' (a quantidade sai
+  // quebrada), e a correção dela é na conversão — não na UmbMigo. Travar o
+  // cartão no tipo era mandar a pessoa consertar a coisa errada.
+  //
+  // Então o tipo escolhe a aba INICIAL e mais nada: as duas ficam sempre
+  // alcançáveis.
+  const [aba, setAba] = useState<'conversao' | 'unidade'>('conversao')
+  useEffect(() => {
+    setAba(sel?.ehUmbMigo ? 'unidade' : 'conversao')
+  }, [selId, sel?.ehUmbMigo])
+
+  // ── o cadastro está invertido? ────────────────────────────────────────────
+  //
+  // Roda sobre a conversão em EDIÇÃO (convs), não sobre a gravada: mexer no
+  // fator e ver o veredito mudar na hora é o que transforma isto em ferramenta
+  // em vez de oráculo.
+  const inversao = useMemo(() => {
+    if (!sel) return null
+    return testarInversao(convs, {
+      qtdNf: sel.qtdNf,
+      qtdSaldo: sel.qtdSaldo,
+      valorNf: sel.valorNf,
+      valorPedido: sel.valorPedido,
+      umbNf: sel.umbNf,
+      umbPedido: sel.umbPedido,
+    }, TOL_VALOR_ITEM)
+  }, [sel, convs])
+
+  // Aplica o candidato na linha que venceu. Não grava — quem grava é o botão
+  // de sempre, depois de a pessoa ver a simulação mudar.
+  function aplicarInversao() {
+    if (!inversao) return
+    mexer(inversao.indice, { fator: Math.round(inversao.fatorNovo * 1e9) / 1e9 })
+  }
 
   // Preenche fator e unidades pela MESMA regra do "Sugerir" do mapeamento.
   //
@@ -1019,8 +1068,86 @@ export function ConversoesPendentes() {
 
           {sel && (
             <div className="border border-zinc-800 rounded p-3 space-y-3">
+              {/* ── quem é o caso, e de quem veio ─────────────────────────
+                  No detalhe, e não só na lista: é aqui que se decide, e
+                  rolar de volta para ver de quem era é o gesto que faz a
+                  pessoa decidir sem olhar. */}
+              <div className="flex flex-wrap items-baseline justify-between gap-2 pb-2 border-b border-zinc-800">
+                <div className="min-w-0">
+                  <div className="font-mono text-sm">
+                    {sel.fornecedor}/{sel.codigo || '—'}{' '}
+                    <span className="text-zinc-500">{sel.referencia}</span>
+                  </div>
+                  {descricaoDoItem(sel, itens) && (
+                    <div className="text-xs text-zinc-400 break-words">
+                      {descricaoDoItem(sel, itens)}
+                    </div>
+                  )}
+                </div>
+                <QuemPediu usuario={sel.usuario} centro={sel.centro} />
+              </div>
+
+              {/* ── o veredito da inversão ───────────────────────────────
+                  Fica ACIMA das abas porque, quando dispara, é ele que
+                  escolhe a aba: o conserto é na conversão, mesmo que o
+                  sintoma tenha sido a unidade. */}
+              {inversao?.veredicto === 'invertida' && (
+                <div className="text-xs rounded border border-amber-700 bg-amber-950/40 px-3 py-2 space-y-1.5">
+                  <div className="font-semibold text-amber-300">
+                    O fator cadastrado parece invertido.
+                  </div>
+                  <div className="font-mono text-zinc-300 space-y-0.5">
+                    <div>
+                      com {num(inversao.fatorAtual)}: qtd {num(inversao.atual.qtdSap)} · valor{' '}
+                      {num(inversao.atual.valorConv)} — <span className="text-red-400">não fecha</span>
+                    </div>
+                    <div>
+                      com {num(inversao.fatorNovo)}: qtd {num(inversao.invertida.qtdSap)} · valor{' '}
+                      {num(inversao.invertida.valorConv)} —{' '}
+                      <span className="text-green-400">fecha nas duas contas</span>
+                    </div>
+                  </div>
+                  <p className="text-zinc-400">
+                    Quantidade contra o saldo e valor contra o do pedido, as duas com o mesmo
+                    candidato — e o candidato não foi escolhido para fechar, é o inverso do que
+                    já está lá. É a assinatura da migração do VBA, que gravou as universais
+                    como 1/conversão.
+                  </p>
+                  <button
+                    onClick={() => {
+                      setAba('conversao')
+                      aplicarInversao()
+                    }}
+                    className="px-2.5 py-1 rounded bg-amber-700 hover:bg-amber-600 text-white"
+                  >
+                    Aplicar 1/{num(inversao.fatorAtual)} na conversão {inversao.indice + 1}
+                  </button>
+                </div>
+              )}
+
+              {/* ── qual conserto ────────────────────────────────────────── */}
+              <div className="flex gap-1 bg-zinc-900 border border-zinc-800 rounded-lg p-1 text-xs">
+                {([
+                  ['conversao', 'Conversão'],
+                  ['unidade', 'Unidade (UmbMigo)'],
+                ] as const).map(([v, r]) => (
+                  <button
+                    key={v}
+                    onClick={() => setAba(v)}
+                    className={`flex-1 py-1.5 rounded transition-colors ${
+                      aba === v ? 'bg-zinc-800 text-white' : 'text-zinc-500 hover:text-zinc-300'
+                    }`}
+                  >
+                    {r}
+                    {sel.ehUmbMigo === (v === 'unidade') && (
+                      <span className="ml-1.5 text-[10px] text-zinc-500">suspeita do Coreon</span>
+                    )}
+                  </button>
+                ))}
+              </div>
+
               {/* ── o que aconteceu naquela NF ─────────────────────────── */}
-              {sel.ehUmbMigo ? (
+              {aba === 'unidade' ? (
                 <div className="text-xs space-y-1">
                   <div className="font-semibold text-zinc-300">Naquela NF</div>
                   <div className="grid grid-cols-2 gap-x-4 gap-y-1 font-mono text-zinc-400">
@@ -1066,7 +1193,7 @@ export function ConversoesPendentes() {
               )}
 
               {/* ── o que o SAP tem para o material ────────────────────── */}
-              {sel.ehUmbMigo && (
+              {aba === 'unidade' && (
                 <div className="text-xs space-y-1">
                   <div className="font-semibold text-zinc-300">Unidades que o SAP tem (MARM)</div>
 
@@ -1139,7 +1266,7 @@ export function ConversoesPendentes() {
               </div>
 
               {/* ── correção da UNIDADE ───────────────────────────────── */}
-              {cadastro?.existe && sel.ehUmbMigo && (
+              {cadastro?.existe && aba === 'unidade' && (
                 <div className="text-xs space-y-2">
                   <div className="font-semibold text-zinc-300">
                     Corrigir a UmbMigo de {sel.codigo}
@@ -1192,7 +1319,7 @@ export function ConversoesPendentes() {
                 este painel aqui, o aviso logo acima mandaria a pessoa para outra
                 tela no meio da correção.
               */}
-              {cadastro?.existe && (
+              {cadastro?.existe && aba === 'conversao' && (
                 <div className="text-xs space-y-2">
                   <div className="font-semibold text-zinc-300">
                     {sel.ehUmbMigo
