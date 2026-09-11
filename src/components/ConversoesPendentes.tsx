@@ -294,6 +294,26 @@ function descricaoDoItem(c: Caso, itens: ItensJson | null): string {
 // Os dois fatores concordam? Tolerância relativa: 12 contra 12,0001 é o mesmo
 // número contado de dois jeitos, e exigir igualdade exata reprovaria todos os
 // casos reais — as duas contas passam por arredondamento de moeda.
+// ── esta linha tem o lado da NF CRU? ─────────────────────────────────────────
+//
+// Até a correção do SolicitacaoUmbMigoService, o caso de UNIDADE mandava a
+// quantidade JÁ CONVERTIDA no campo qtd_nf — e a unidade da NF chegava como a
+// do pedido, porque o ProcessarConversao troca fromUMB por "{toUMB}*" quando
+// converte. Com os dois lados na mesma unidade e a quantidade já dividida,
+// "Sugerir" produzia um fator sobre um número convertido, na forma UNIVERSAL.
+//
+// A assinatura da linha velha é exata: o código antigo atribuía a MESMA
+// variável a qtd_nf e a qtd_convertida. Depois da correção elas sempre diferem
+// — um caso de unidade só existe porque um fator foi aplicado.
+//
+// Detectar pelo dado, e não por uma coluna de versão, é o que faz isto valer
+// para as linhas que já estão no banco.
+function semLadoCru(c: Caso): boolean {
+  if (!c.ehUmbMigo) return false
+  if (!Number.isFinite(c.qtdConvertida) || c.qtdConvertida === 0) return false
+  return Math.abs(c.qtdNf - c.qtdConvertida) < 1e-9
+}
+
 function concordam(c: Caso): boolean {
   if (c.fatorQtd == null || c.fatorValor == null) return false
   const maior = Math.max(Math.abs(c.fatorQtd), Math.abs(c.fatorValor))
@@ -1144,6 +1164,25 @@ export function ConversoesPendentes() {
                 </div>
               )}
 
+              {semLadoCru(sel) && (
+                <div className="text-xs rounded border border-zinc-700 bg-zinc-900 px-3 py-2 space-y-1">
+                  <div className="font-semibold text-zinc-300">
+                    Esta linha não tem o lado cru da NF.
+                  </div>
+                  <p className="text-zinc-400">
+                    Ela foi registrada antes da correção do Coreon: o campo da quantidade guarda
+                    o valor <em>já convertido</em> ({num(sel.qtdConvertida)}), e a unidade da NF
+                    chegou como a do pedido. Por isso o <strong>Sugerir</strong> está
+                    desabilitado — daqui ele calcularia um fator sobre um número convertido, e
+                    sairia universal.
+                  </p>
+                  <p className="text-zinc-500">
+                    Dá para corrigir mesmo assim: use as unidades e as quantidades da nota, que
+                    estão no SAP ou no XML. Casos novos deste material já virão completos.
+                  </p>
+                </div>
+              )}
+
               {/* ── qual conserto ────────────────────────────────────────── */}
               <div className="flex gap-1 bg-zinc-900 border border-zinc-800 rounded-lg p-1 text-xs">
                 {([
@@ -1435,8 +1474,13 @@ export function ConversoesPendentes() {
 
                         <button
                           onClick={() => sugerir(i)}
-                          className="px-2 py-1 rounded bg-zinc-800 hover:bg-zinc-700"
-                          title="Preenche fator e unidades pela NF e pelo saldo — mesma regra do botão Sugerir do mapeamento."
+                          disabled={semLadoCru(sel)}
+                          className="px-2 py-1 rounded bg-zinc-800 hover:bg-zinc-700 disabled:opacity-40 disabled:cursor-not-allowed"
+                          title={
+                            semLadoCru(sel)
+                              ? 'Esta linha foi registrada antes da correção: ela guarda a quantidade JÁ CONVERTIDA, não a da nota. Sugerir daqui daria um fator sobre um número convertido — e universal, porque as duas unidades chegaram iguais. Use os números da nota.'
+                              : 'Preenche fator e unidades pela NF e pelo saldo — mesma regra do botão Sugerir do mapeamento.'
+                          }
                         >
                           Sugerir
                         </button>
