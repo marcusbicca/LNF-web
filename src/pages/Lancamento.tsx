@@ -32,7 +32,11 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useApp } from '../context/AppContext'
 import { SupabaseService } from '../services/supabase'
-import { SolicitacoesService, novaSessaoId } from '../services/solicitacoes'
+import {
+  SolicitacoesService,
+  novaSessaoId,
+  type Solicitacao,
+} from '../services/solicitacoes'
 import { deUltimoExecutar } from '../services/ultimoExecutar'
 import { nfDeExemplo } from '../mocks/lancamento'
 import {
@@ -58,6 +62,23 @@ const numero = (v: number | null | undefined) =>
   v === null || v === undefined ? '—' : v.toLocaleString('pt-BR')
 
 const ehMarcador = (pedido: string) => (MARCAS_PEDIDO as readonly string[]).includes(pedido)
+
+// Uma linha para reconhecer o Executar na lista, sem abrir. Lê por tentativa:
+// é JSON de outra máquina, e um resultado fora do formato não pode quebrar a
+// listagem inteira.
+function resumoDoExecutar(resultado: unknown): string {
+  try {
+    const r = resultado as Record<string, unknown>
+    const nfs = (r?.Nfs ?? {}) as Record<string, Record<string, unknown>>
+    const chaves = Object.keys(nfs)
+    if (chaves.length === 0) return 'sem NFs na resposta'
+    const primeira = nfs[chaves[0]]
+    const nome = [primeira?.NumeroNF, primeira?.Fornecedor].filter(Boolean).join(' · ')
+    return chaves.length > 1 ? `${chaves.length} NFs — ${nome}…` : nome || chaves[0]
+  } catch {
+    return '(resposta ilegível)'
+  }
+}
 
 // ── as mensagens, na ordem de gravidade do UsarUltimoExecutar ────────────────
 function mensagensDe(sinais: EstadoLancamento['sinais']): MensagemFeedback[] {
@@ -1077,6 +1098,18 @@ function Importar({ onCarregar }: { onCarregar: (e: EstadoLancamento) => void })
 
   // Uma resposta multi-NF traz várias; guardadas aqui para trocar sem refazer
   // a viagem, que é cara.
+  // ── executares já rodados, prontos para reabrir ───────────────────────
+  //
+  // A resposta completa de um 'executar' fica na coluna 'resultado' da
+  // solicitação — é o corpo da pipe, guardado inteiro pelo Concluir. O
+  // histórico geral NÃO serve: lá o executar grava só resumo (contagens e o
+  // Nfs achatado), sem o PedidosDict, que é o que a grade precisa.
+  //
+  // Por isso reabrir é de graça: o JSON já está no banco, não há máquina a
+  // acordar nem Executar a rodar de novo.
+  const [recentes, setRecentes] = useState<Solicitacao[] | null>(null)
+  const [carregandoRecentes, setCarregandoRecentes] = useState(false)
+
   const [bruto, setBruto] = useState<unknown>(null)
   const [chaves, setChaves] = useState<string[]>([])
   const [chaveSel, setChaveSel] = useState('')
@@ -1127,6 +1160,24 @@ function Importar({ onCarregar }: { onCarregar: (e: EstadoLancamento) => void })
   //
   // Lancar fica de fora: isto ANALISA. Análise é aberta a todos no Coreon; o
   // lançamento é que exige almoxarifado — e não é o que se quer aqui.
+  async function carregarRecentes() {
+    if (!sol) return setErro('Configure o transporte em Configurações.')
+    setCarregandoRecentes(true)
+    setErro(null)
+    try {
+      setRecentes(
+        await sol.listar({
+          limit: 30,
+          filtros: 'acao=eq.executar&status=eq.concluida',
+        }),
+      )
+    } catch (e) {
+      setErro((e as Error).message)
+    } finally {
+      setCarregandoRecentes(false)
+    }
+  }
+
   async function analisar() {
     if (!sol) {
       setErro('Configure o transporte em Configurações.')
@@ -1336,6 +1387,58 @@ function Importar({ onCarregar }: { onCarregar: (e: EstadoLancamento) => void })
               Executar roda em seu nome e o histórico registra você. Os dois campos andam
               juntos. Deixando ambos em branco, roda com o login que o operador já validou
               naquela máquina — funciona, mas a ação sai no nome <strong>dele</strong>.
+            </p>
+          </div>
+
+          <div className="space-y-2">
+            <div className="flex items-center justify-between gap-2">
+              <h3 className="text-[11px] uppercase tracking-wide text-zinc-500">
+                Ou reabrir um Executar já rodado
+              </h3>
+              <button
+                onClick={carregarRecentes}
+                disabled={carregandoRecentes}
+                className="px-2.5 py-1 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded text-xs disabled:opacity-40 transition-colors"
+              >
+                {carregandoRecentes ? 'Buscando…' : recentes ? 'Recarregar' : 'Listar'}
+              </button>
+            </div>
+
+            {recentes?.length === 0 && (
+              <p className="text-[11px] text-zinc-600">
+                Nenhum Executar concluído na fila de solicitações.
+              </p>
+            )}
+
+            {recentes && recentes.length > 0 && (
+              <ul className="border border-zinc-800 rounded-lg divide-y divide-zinc-800 max-h-56 overflow-y-auto">
+                {recentes.map((r) => (
+                  <li key={r.id}>
+                    <button
+                      onClick={() => {
+                        if (aplicar(r.resultado)) setAberto(false)
+                      }}
+                      className="w-full text-left px-3 py-2 hover:bg-zinc-900 transition-colors"
+                    >
+                      <div className="flex flex-wrap items-baseline gap-x-2 text-xs">
+                        <span className="font-mono text-zinc-300">#{r.id}</span>
+                        <span className="text-zinc-400">{r.criado_por || '—'}</span>
+                        <span className="text-zinc-600">
+                          {new Date(r.criado_em).toLocaleString('pt-BR')}
+                        </span>
+                      </div>
+                      <div className="text-[11px] text-zinc-500 break-words">
+                        {resumoDoExecutar(r.resultado)}
+                      </div>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+
+            <p className="text-[11px] text-zinc-600">
+              Reabrir é de graça: o JSON já está guardado na resposta da solicitação. Nenhuma
+              máquina é acordada e nada roda de novo.
             </p>
           </div>
 
