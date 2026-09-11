@@ -37,7 +37,7 @@ import {
   novaSessaoId,
   type Solicitacao,
 } from '../services/solicitacoes'
-import { deUltimoExecutar } from '../services/ultimoExecutar'
+import { corpoDaResposta, deUltimoExecutar } from '../services/ultimoExecutar'
 import { nfDeExemplo } from '../mocks/lancamento'
 import {
   MARCAS_PEDIDO,
@@ -63,18 +63,35 @@ const numero = (v: number | null | undefined) =>
 
 const ehMarcador = (pedido: string) => (MARCAS_PEDIDO as readonly string[]).includes(pedido)
 
+// Tem o que reabrir? 'Nfs' é o mínimo — sem ele não há NF nenhuma para
+// mostrar, e a linha só ocuparia espaço na lista.
+//
+// corpoDaResposta não é dispensável aqui: a coluna 'resultado' vem sempre
+// embrulhada em { duracao_seg, resposta }. Lendo direto, 'Nfs' nunca existe e
+// a lista descarta TUDO — inclusive os Executares bons.
+function temNfs(resultado: unknown): boolean {
+  const nfs = corpoDaResposta(resultado).Nfs as Record<string, unknown> | undefined
+  return !!nfs && Object.keys(nfs).length > 0
+}
+
 // Uma linha para reconhecer o Executar na lista, sem abrir. Lê por tentativa:
 // é JSON de outra máquina, e um resultado fora do formato não pode quebrar a
 // listagem inteira.
 function resumoDoExecutar(resultado: unknown): string {
   try {
-    const r = resultado as Record<string, unknown>
+    const r = corpoDaResposta(resultado)
     const nfs = (r?.Nfs ?? {}) as Record<string, Record<string, unknown>>
     const chaves = Object.keys(nfs)
     if (chaves.length === 0) return 'sem NFs na resposta'
     const primeira = nfs[chaves[0]]
     const nome = [primeira?.NumeroNF, primeira?.Fornecedor].filter(Boolean).join(' · ')
-    return chaves.length > 1 ? `${chaves.length} NFs — ${nome}…` : nome || chaves[0]
+    const base = chaves.length > 1 ? `${chaves.length} NFs — ${nome}…` : nome || chaves[0]
+
+    // 'resumo: true' devolve os sinais e as divergências, mas NÃO o
+    // PedidosDict. Abre, e a grade vem vazia — dizer isso antes do clique
+    // evita a viagem perdida.
+    const temItens = !!(r?.PedidosDict && Object.keys(r.PedidosDict).length > 0)
+    return temItens ? base : `${base} — sem itens (resposta resumida)`
   } catch {
     return '(resposta ilegível)'
   }
@@ -1165,12 +1182,25 @@ function Importar({ onCarregar }: { onCarregar: (e: EstadoLancamento) => void })
     setCarregandoRecentes(true)
     setErro(null)
     try {
-      setRecentes(
-        await sol.listar({
-          limit: 30,
-          filtros: 'acao=eq.executar&status=eq.concluida',
-        }),
-      )
+      // As DUAS ações servem: o get_ultimo_executar devolve o mesmo
+      // ExecutarResponse que o executar — ele só busca o que já estava em
+      // memória em vez de rodar. Filtrar por uma só escondia metade do que
+      // dá para reabrir.
+      const linhas = await sol.listar({
+        limit: 60,
+        filtros: 'acao=in.(executar,get_ultimo_executar)&status=eq.concluida',
+      })
+
+      // Concluída não quer dizer reaproveitável. Duas sobras previsíveis:
+      //
+      //   assincrono  o executar responde {Sucesso, Codigo:"INICIADO"} e o
+      //               resultado de verdade vai pela cadeia de macros — a
+      //               linha fica sem payload nenhum;
+      //   SEM_EXECUTAR  o get_ultimo_executar não achou nada.
+      //
+      // Ambas concluem com sucesso e não têm o que abrir. Some da lista quem
+      // não trouxer 'Nfs'.
+      setRecentes(linhas.filter((l) => temNfs(l.resultado)))
     } catch (e) {
       setErro((e as Error).message)
     } finally {
@@ -1425,6 +1455,9 @@ function Importar({ onCarregar }: { onCarregar: (e: EstadoLancamento) => void })
                         <span className="text-zinc-400">{r.criado_por || '—'}</span>
                         <span className="text-zinc-600">
                           {new Date(r.criado_em).toLocaleString('pt-BR')}
+                        </span>
+                        <span className="text-[10px] uppercase tracking-wide text-zinc-600">
+                          {r.acao === 'executar' ? 'executar' : 'último'}
                         </span>
                       </div>
                       <div className="text-[11px] text-zinc-500 break-words">
