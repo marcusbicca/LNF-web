@@ -1034,21 +1034,27 @@ function BlocoDivergencia({ titulo, children }: { titulo: string; children: Reac
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Importar o último Executar de alguém
+// Trazer uma análise de NF para cá
 //
 // Dois caminhos, e os dois existem porque falham por motivos diferentes.
 //
-// COLAR funciona sempre: offline, sem sessão, sem a máquina do outro estar
-// ligada. É também o caminho de quem já tem a resposta em mãos — da aba
-// Respostas, de um log, de uma conversa.
+// ANALISAR roda um Executar NOVO numa máquina: baixa a NF pela chave, cruza
+// com os pedidos informados e devolve o resultado. É o caminho quando a
+// pergunta é sobre uma nota específica — não sobre o que alguém já rodou.
 //
-// BUSCAR é a conveniência, e depende de a máquina estar acordada. São dois
-// passos numa sequência só (iniciar_sessao + get_ultimo_executar), porque o
-// Coreon recusa qualquer ação num sessao_id que ele não abriu — e no lote, se
-// a abertura falhar, o segundo passo nem chega a ser reservado.
+// COLAR funciona sempre: offline, sem sessão, sem a máquina do outro estar
+// ligada. É o caminho de quem já tem a resposta em mãos — da aba Respostas,
+// de um log, de uma conversa.
+//
+// Por que os passos vão numa SEQUÊNCIA, e não soltos: o Coreon recusa
+// qualquer ação num sessao_id que ele não abriu, e é a sessão que liga os
+// passos — o XML baixado vive nela, e é lá que o Executar vai procurá-lo. No
+// lote, o banco só libera o passo seguinte quando o anterior concluiu, e só
+// para a MESMA máquina. Soltos, cairiam em sessões (ou máquinas) diferentes.
 //
 // O canal remoto consulta 1x/min enquanto há janela aberta, então a espera
-// normal é de dezenas de segundos. Não é lentidão da tela.
+// normal é de dezenas de segundos — mais o tempo do Executar em si, que lê
+// todos os pedidos por RFC. Não é lentidão da tela.
 // ─────────────────────────────────────────────────────────────────────────────
 function Importar({ onCarregar }: { onCarregar: (e: EstadoLancamento) => void }) {
   const { config } = useApp()
@@ -1060,6 +1066,9 @@ function Importar({ onCarregar }: { onCarregar: (e: EstadoLancamento) => void })
   const [aberto, setAberto] = useState(false)
   const [texto, setTexto] = useState('')
   const [destinatario, setDestinatario] = useState('')
+  const [chaveNf, setChaveNf] = useState('')
+  const [pedidosTxt, setPedidosTxt] = useState('')
+  const [sapSenha, setSapSenha] = useState('')
   const [ocupado, setOcupado] = useState<string | null>(null)
   const [progresso, setProgresso] = useState('')
   const [erro, setErro] = useState<string | null>(null)
@@ -1100,46 +1109,72 @@ function Importar({ onCarregar }: { onCarregar: (e: EstadoLancamento) => void })
     if (aplicar(parsed)) setAberto(false)
   }
 
-  async function buscar() {
+  // ── rodar um Executar NOVO numa máquina, e ler o resultado ────────────────
+  //
+  // Três passos numa sequência só, na MESMA sessão — e é a sessão que amarra:
+  // o XML baixado no passo 2 fica no AppState daquela sessão, e é ele que o
+  // Executar do passo 3 encontra. Passos avulsos cairiam em sessões
+  // diferentes (ou em máquinas diferentes) e o Executar não acharia XML nenhum.
+  //
+  // O 'executar' vai SÍNCRONO, e isso resolve duas coisas de uma vez:
+  //
+  //   • a resposta completa volta no corpo da própria solicitação — não é
+  //     preciso um quarto passo com get_ultimo_executar;
+  //   • nada é escrito na planilha do outro lado. Assíncrono dispara o
+  //     ExcelCallbackService.Avisar no fim, que escreve o feedback e abre o
+  //     JFeedback na tela de quem estiver sentado lá.
+  //
+  // Lancar fica de fora: isto ANALISA. Análise é aberta a todos no Coreon; o
+  // lançamento é que exige almoxarifado — e não é o que se quer aqui.
+  async function analisar() {
     if (!sol) {
       setErro('Configure o transporte em Configurações.')
       return
     }
     const alvo = destinatario.trim()
-    if (!alvo) {
-      setErro('Informe o usuário Windows da máquina de onde vem o Executar.')
-      return
-    }
+    const chaveLimpa = chaveNf.replace(/\D/g, '')
+    const pedidos = pedidosTxt
+      .split(/[\s,;]+/)
+      .map((p) => p.trim())
+      .filter(Boolean)
+
+    if (!alvo) return setErro('Informe o usuário Windows da máquina que vai rodar.')
+    if (chaveLimpa.length !== 44) return setErro('A chave da NF precisa ter 44 dígitos.')
+    if (pedidos.length === 0) return setErro('Informe ao menos um pedido.')
 
     setErro(null)
-    setOcupado('buscar')
-    setProgresso('Abrindo sessão na máquina…')
+    setOcupado('analisar')
+    setProgresso('Abrindo sessão…')
 
     try {
       const sessaoId = novaSessaoId(config?.usuario ?? '')
+      const comum = {
+        destinatario: alvo,
+        ...(sapSenha.trim() ? { sapUsuario: alvo, sapSenha: sapSenha.trim() } : {}),
+      }
 
-      // Sequência, e não dois envios: no lote o segundo passo só é liberado
-      // quando o primeiro conclui, e só para a MESMA máquina que pegou o
-      // primeiro. É o que garante que o get_ultimo_executar leia a memória
-      // daquele Coreon, e não a de outro que estivesse de olho na fila.
       await sol.criarSequencia(sessaoId, [
-        { acao: 'iniciar_sessao', payload: { IncluirPipes: false }, destinatario: alvo },
-        { acao: 'get_ultimo_executar', payload: {}, destinatario: alvo },
+        { acao: 'iniciar_sessao', payload: { IncluirPipes: false }, ...comum },
+        { acao: 'baixar_xml_internet', payload: { Chave: chaveLimpa }, ...comum },
+        {
+          acao: 'executar',
+          payload: { PedidosPorNfUsuario: { [chaveLimpa]: pedidos } },
+          ...comum,
+        },
       ])
 
-      setProgresso('Aguardando a máquina responder (consulta 1x/min)…')
+      setProgresso('Baixando a NF e rodando o Executar na máquina…')
 
-      const resp = await sol.aguardarNaSessao(sessaoId, 'get_ultimo_executar', 0, {
-        timeoutMs: 6 * 60 * 1000,
-        onTick: (s) => {
-          if (s?.status) setProgresso(`Aguardando… (${s.status})`)
+      // O Executar é a ação mais longa do Coreon: leitura RFC de todos os
+      // pedidos, mais a espera do canal remoto. Teto generoso de propósito.
+      const resp = await sol.aguardarNaSessao(sessaoId, 'executar', 0, {
+        timeoutMs: 12 * 60 * 1000,
+        onTick: (r) => {
+          if (r?.status) setProgresso(`Executando… (${r.status})`)
         },
       })
 
-      if (resp.erro) {
-        setErro(resp.erro)
-        return
-      }
+      if (resp.erro) return setErro(resp.erro)
       if (aplicar(resp.resultado)) setAberto(false)
     } catch (e) {
       setErro((e as Error).message)
@@ -1156,7 +1191,7 @@ function Importar({ onCarregar }: { onCarregar: (e: EstadoLancamento) => void })
           onClick={() => setAberto((v) => !v)}
           className="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded-lg text-sm transition-colors"
         >
-          Importar Executar {aberto ? '▴' : '▾'}
+          Trazer análise {aberto ? '▴' : '▾'}
         </button>
 
         {chaves.length > 1 && (
@@ -1190,27 +1225,69 @@ function Importar({ onCarregar }: { onCarregar: (e: EstadoLancamento) => void })
         <div className="border-t border-zinc-800 p-3 space-y-4">
           <div className="space-y-2">
             <h3 className="text-[11px] uppercase tracking-wide text-zinc-500">
-              Buscar de uma máquina
+              Analisar uma NF numa máquina
             </h3>
-            <div className="flex flex-wrap gap-2">
-              <input
-                value={destinatario}
-                onChange={(e) => setDestinatario(e.target.value)}
-                placeholder="usuário Windows (ex.: israel.santos)"
-                className="flex-1 min-w-[14rem] bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:border-green-500"
-              />
-              <button
-                onClick={buscar}
-                disabled={!!ocupado}
-                className="px-4 py-2 bg-green-700 hover:bg-green-600 disabled:opacity-40 text-white rounded-lg text-sm font-medium transition-colors"
-              >
-                {ocupado === 'buscar' ? 'Buscando…' : 'Buscar'}
-              </button>
+
+            <div className="grid gap-2 sm:grid-cols-2">
+              <label className="block">
+                <span className="block text-[11px] text-zinc-500 mb-0.5">Chave da NF</span>
+                <input
+                  value={chaveNf}
+                  onChange={(e) => setChaveNf(e.target.value)}
+                  inputMode="numeric"
+                  placeholder="44 dígitos"
+                  className="w-full bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:border-green-500"
+                />
+              </label>
+              <label className="block">
+                <span className="block text-[11px] text-zinc-500 mb-0.5">
+                  Pedidos (separados por espaço ou vírgula)
+                </span>
+                <input
+                  value={pedidosTxt}
+                  onChange={(e) => setPedidosTxt(e.target.value)}
+                  placeholder="4500123456 4500123457"
+                  className="w-full bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:border-green-500"
+                />
+              </label>
+              <label className="block">
+                <span className="block text-[11px] text-zinc-500 mb-0.5">
+                  Máquina (usuário Windows)
+                </span>
+                <input
+                  value={destinatario}
+                  onChange={(e) => setDestinatario(e.target.value)}
+                  placeholder="israel.santos"
+                  className="w-full bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:border-green-500"
+                />
+              </label>
+              <label className="block">
+                <span className="block text-[11px] text-zinc-500 mb-0.5">
+                  Senha SAP (opcional)
+                </span>
+                <input
+                  value={sapSenha}
+                  onChange={(e) => setSapSenha(e.target.value)}
+                  type="password"
+                  placeholder="em branco = usa o login da máquina"
+                  className="w-full bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-green-500"
+                />
+              </label>
             </div>
+
+            <button
+              onClick={analisar}
+              disabled={!!ocupado}
+              className="px-4 py-2 bg-green-700 hover:bg-green-600 disabled:opacity-40 text-white rounded-lg text-sm font-medium transition-colors"
+            >
+              {ocupado === 'analisar' ? 'Rodando…' : 'Analisar'}
+            </button>
+
             <p className="text-[11px] text-zinc-600">
-              Abre uma sessão naquela máquina e pede o último Executar que está na memória
-              dela. Ela precisa estar com o Lançador aberto; a resposta costuma levar de
-              alguns segundos a um minuto.
+              Baixa a NF e roda um Executar <strong>novo</strong> naquela máquina, em sessão
+              própria — o trabalho de quem estiver sentado lá não é tocado, nada é escrito na
+              planilha dele e <strong>nada é lançado</strong>: só análise. Em branco, a senha
+              SAP faz o Executar usar o login que já está validado na máquina.
             </p>
           </div>
 

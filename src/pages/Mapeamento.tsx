@@ -10,6 +10,7 @@ import {
   reconstruirConv,
   resolverConv,
   sugerirConv,
+  universalEhSeguro,
   type ConvEditavel,
 } from '../utils/conversao'
 import { ConversoesPendentes } from '../components/ConversoesPendentes'
@@ -432,12 +433,11 @@ export function Mapeamento() {
 
   const umbNf = umbBase(cb1Sel?.umbForn ?? '')
   const umbPed = umbBase(cb2Sel?.umbPed ?? '')
-  // Forma canônica dos dois lados, e não toLowerCase: o Coreon compara com
-  // UmbUtils.Iguais, então para ele "CX." e "CX" são a mesma unidade. Com a
-  // comparação frouxa aqui, a tela via unidades DIFERENTES, mostrava de/para e
-  // gravava uma direcional onde o certo era universal.
-  const umbsIguais =
-    !!cb1Sel && !!cb2Sel && normalizarUmb(umbNf) === normalizarUmb(umbPed)
+  // A regra mora em utils/conversao.ts — a fila de suspeitos usa a MESMA.
+  // Comparar em forma canônica importa: o Coreon usa UmbUtils.Iguais, então
+  // para ele "CX." e "CX" são a mesma unidade, e uma comparação frouxa aqui
+  // gravaria uma direcional onde o certo era universal.
+  const umbsIguais = !!cb1Sel && !!cb2Sel && universalEhSeguro(umbNf, umbPed)
   const mostrarDePara = !!cb1Sel && !!cb2Sel && !umbsIguais
 
   // ── Parse do JSON ──────────────────────────────────────────────────────────
