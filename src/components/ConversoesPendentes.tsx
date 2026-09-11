@@ -11,6 +11,7 @@ import {
   reconstruirConvs,
   resolverConv,
   testarInversao,
+  universalEhSeguro,
   sugerirConv,
   type ConvEditavel,
 } from '../utils/conversao'
@@ -636,11 +637,16 @@ export function ConversoesPendentes() {
     const alvo = convs[i]
     if (!alvo) return
 
-    const s = sugerirConv(sel.qtdNf, sel.qtdSaldo, sel.umbNf, sel.umbPedido, alvo.umbsIguais)
+    // A forma vem da REGRA, não do checkbox. Sugerir respeitando uma marca
+    // universal que não deveria existir era gravar o erro com um clique —
+    // e era o clique mais natural da tela.
+    const seguro = universalEhSeguro(sel.umbNf, sel.umbPedido)
+    const s = sugerirConv(sel.qtdNf, sel.qtdSaldo, sel.umbNf, sel.umbPedido, seguro)
     if (!s) return
 
     mexer(i, {
       fator: Math.round(s.fator * 1e6) / 1e6,
+      umbsIguais: s.umbsIguais,
       ...(s.umbsIguais ? {} : { de: s.de, para: s.para }),
     })
   }
@@ -654,8 +660,21 @@ export function ConversoesPendentes() {
     setConvs(prev => prev.map((c, k) => (k === i ? { ...c, ...campos } : c)))
   }
 
+  // Nasce com a forma CERTA para este caso, e não universal por padrão.
+  //
+  // O convVazia() devolve universal — o que fazia toda conversão criada aqui
+  // nascer sem escopo, mesmo com a NF em CX e o pedido em UN. É assim que a
+  // fila de suspeitos virava fábrica do problema que ela existe para
+  // resolver. O Mapeamento nunca teve isso porque lá o universal é DERIVADO
+  // das unidades; aqui era um checkbox livre com o padrão errado.
   function adicionar() {
-    setConvs(prev => [...prev, convVazia()])
+    const seguro = universalEhSeguro(sel?.umbNf, sel?.umbPedido)
+    setConvs(prev => [
+      ...prev,
+      seguro
+        ? convVazia()
+        : { ...convVazia(), umbsIguais: false, de: sel?.umbPedido ?? '', para: sel?.umbNf ?? '' },
+    ])
   }
 
   function remover(i: number) {
@@ -1358,6 +1377,17 @@ export function ConversoesPendentes() {
                           />
                           universal
                         </label>
+
+                        {/* O aviso fica NA LINHA, e não num rodapé: quem marca
+                            a caixa está olhando para ela. */}
+                        {c.umbsIguais && !universalEhSeguro(sel.umbNf, sel.umbPedido) && (
+                          <span
+                            className="text-amber-400"
+                            title={`A NF veio em ${sel.umbNf || '?'} e o pedido está em ${sel.umbPedido || '?'}. Universal não tem escopo: vale para QUALQUER par de unidades desta referência, inclusive os que ainda não apareceram.`}
+                          >
+                            ⚠ sem escopo ({sel.umbNf || '?'} ≠ {sel.umbPedido || '?'})
+                          </span>
+                        )}
 
                         {!c.umbsIguais && (
                           <>

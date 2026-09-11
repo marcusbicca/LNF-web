@@ -69,6 +69,34 @@ export function normalizarPadrao(padrao: string | undefined | null): string {
   return normalizarUmb(padrao.replace(/\*+$/, ''))
 }
 
+// ── quando UNIVERSAL é seguro ────────────────────────────────────────────────
+//
+// Só quando as duas unidades são a mesma coisa.
+//
+// Universal não é "um fator mais simples": é um fator SEM ESCOPO. O
+// resolverConv a aceita antes de qualquer direcional e sem olhar unidade
+// nenhuma, então ela vale para todo par de UMB que aparecer naquela
+// referência — hoje, e em toda nota futura. Com as unidades iguais isso é
+// inofensivo, porque não há par nenhum a distinguir. Com unidades diferentes
+// é uma regra que se aplica onde ninguém autorizou: o dia em que o fornecedor
+// mandar a mesma referência em UN em vez de CX, o fator continua entrando.
+//
+// A forma direcional diz PARA QUAL par ela vale, e é sempre possível: quando
+// as unidades são iguais, universal e direcional fazem a mesma coisa; quando
+// são diferentes, só a direcional está certa. Então não há caso em que
+// universal seja a única saída — só casos em que ela é a saída preguiçosa.
+export function universalEhSeguro(
+  umbNf: string | undefined | null,
+  umbPedido: string | undefined | null,
+): boolean {
+  const a = normalizarUmb(umbNf)
+  const b = normalizarUmb(umbPedido)
+  // Sem uma das duas não dá para afirmar que diferem — e acusar por falta de
+  // dado transformaria o aviso em ruído.
+  if (a === '' || b === '') return true
+  return a === b
+}
+
 // ── TODAS as conversões da referência ────────────────────────────────────────
 //
 // A referência guarda uma LISTA, e sempre guardou: o ExecutarService percorre
