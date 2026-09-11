@@ -1124,7 +1124,13 @@ function Importar({ onCarregar }: { onCarregar: (e: EstadoLancamento) => void })
       // daquele Coreon, e não a de outro que estivesse de olho na fila.
       await sol.criarSequencia(sessaoId, [
         { acao: 'iniciar_sessao', payload: { IncluirPipes: false }, destinatario: alvo },
-        { acao: 'get_ultimo_executar', payload: {}, destinatario: alvo },
+        // doOperador: sem ele a resposta é SEMPRE "não tem".
+        //
+        // Toda solicitação remota roda em sessão ISOLADA, e sessão isolada
+        // nasce vazia — o último Executar que interessa é o do operador que
+        // está sentado na máquina, em outra sessão. O flag é o único jeito de
+        // atravessar, e existe só para leitura.
+        { acao: 'get_ultimo_executar', payload: { doOperador: true }, destinatario: alvo },
       ])
 
       setProgresso('Aguardando a máquina responder (consulta 1x/min)…')
@@ -1208,9 +1214,10 @@ function Importar({ onCarregar }: { onCarregar: (e: EstadoLancamento) => void })
               </button>
             </div>
             <p className="text-[11px] text-zinc-600">
-              Abre uma sessão naquela máquina e pede o último Executar que está na memória
-              dela. Ela precisa estar com o Lançador aberto; a resposta costuma levar de
-              alguns segundos a um minuto.
+              Lê o último Executar que o operador daquela máquina rodou — o da sessão dele,
+              não uma execução nova: nada é lançado nem recalculado lá. Ela precisa estar com
+              o Lançador aberto e ter rodado um Executar desde que ele subiu; a resposta
+              costuma levar de alguns segundos a um minuto.
             </p>
           </div>
 
