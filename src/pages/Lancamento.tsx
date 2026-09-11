@@ -1068,6 +1068,7 @@ function Importar({ onCarregar }: { onCarregar: (e: EstadoLancamento) => void })
   const [destinatario, setDestinatario] = useState('')
   const [chaveNf, setChaveNf] = useState('')
   const [pedidosTxt, setPedidosTxt] = useState('')
+  const [sapUsuario, setSapUsuario] = useState('')
   const [sapSenha, setSapSenha] = useState('')
   const [ocupado, setOcupado] = useState<string | null>(null)
   const [progresso, setProgresso] = useState('')
@@ -1140,6 +1141,11 @@ function Importar({ onCarregar }: { onCarregar: (e: EstadoLancamento) => void })
 
     if (!alvo) return setErro('Informe o usuário Windows da máquina que vai rodar.')
     if (chaveLimpa.length !== 44) return setErro('A chave da NF precisa ter 44 dígitos.')
+    if (!!sapUsuario.trim() !== !!sapSenha.trim())
+      return setErro(
+        'Usuário e senha do SAP andam juntos: preencha os dois, ou deixe os dois em branco ' +
+          'para rodar com o login da máquina.',
+      )
 
     setErro(null)
     setOcupado('analisar')
@@ -1147,9 +1153,22 @@ function Importar({ onCarregar }: { onCarregar: (e: EstadoLancamento) => void })
 
     try {
       const sessaoId = novaSessaoId(config?.usuario ?? '')
+      // ── a credencial é de QUEM PEDE, não da máquina ────────────────────
+      //
+      // Eu mandava o destinatário como sapUsuario, o que está errado duas
+      // vezes: login do SAP não é o usuário do Windows, e o campo existe
+      // justamente para o SAP ser acessado em nome de quem PEDIU — é o que o
+      // SolicitacaoRemotaService diz, e é o que faz o histórico registrar a
+      // pessoa certa.
+      //
+      // OS DOIS ou NENHUM: o AbrirSessaoIsolada só marca CredencialPropria
+      // quando usuário E senha vêm preenchidos. Mandar só a senha não dá erro
+      // — cai calado no login do operador da máquina, e a ação sai no nome
+      // dele. É o tipo de falha que só se descobre lendo o histórico depois.
+      const usarCred = !!sapUsuario.trim() && !!sapSenha.trim()
       const comum = {
         destinatario: alvo,
-        ...(sapSenha.trim() ? { sapUsuario: alvo, sapSenha: sapSenha.trim() } : {}),
+        ...(usarCred ? { sapUsuario: sapUsuario.trim(), sapSenha: sapSenha.trim() } : {}),
       }
 
       await sol.criarSequencia(sessaoId, [
@@ -1271,13 +1290,23 @@ function Importar({ onCarregar }: { onCarregar: (e: EstadoLancamento) => void })
               </label>
               <label className="block">
                 <span className="block text-[11px] text-zinc-500 mb-0.5">
-                  Senha SAP (opcional)
+                  Usuário SAP <span className="text-zinc-600">(o seu)</span>
                 </span>
+                <input
+                  value={sapUsuario}
+                  onChange={(e) => setSapUsuario(e.target.value)}
+                  placeholder="em branco = login da máquina"
+                  className="w-full bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:border-green-500"
+                />
+              </label>
+              <label className="block">
+                <span className="block text-[11px] text-zinc-500 mb-0.5">Senha SAP</span>
                 <input
                   value={sapSenha}
                   onChange={(e) => setSapSenha(e.target.value)}
                   type="password"
-                  placeholder="em branco = usa o login da máquina"
+                  autoComplete="off"
+                  placeholder="só se preencher o usuário"
                   className="w-full bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-green-500"
                 />
               </label>
@@ -1300,8 +1329,13 @@ function Importar({ onCarregar }: { onCarregar: (e: EstadoLancamento) => void })
               Os pedidos são <strong>opcionais</strong>: vazio, o Coreon usa os que estiverem
               no próprio XML; preenchidos, eles vencem. Não havendo nem um nem outro, a
               resposta volta com <span className="font-mono">PEDIDO_NAO_INFORMADO</span> —
-              que também é um resultado útil. A senha SAP em branco faz o Executar usar o
-              login já validado na máquina.
+              que também é um resultado útil.
+            </p>
+            <p className="text-[11px] text-zinc-600">
+              A credencial do SAP é <strong>a sua</strong>, não a da máquina — é assim que o
+              Executar roda em seu nome e o histórico registra você. Os dois campos andam
+              juntos. Deixando ambos em branco, roda com o login que o operador já validou
+              naquela máquina — funciona, mas a ação sai no nome <strong>dele</strong>.
             </p>
           </div>
 
