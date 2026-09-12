@@ -13,6 +13,7 @@ import {
   type Universal,
   type Execucao,
 } from '../services/solicitacoes'
+import { TabelasSap } from '../components/TabelasSap'
 import {
   carregarComSementes,
   salvar as salvarModelos,
@@ -889,6 +890,14 @@ export function Solicitacoes() {
       </section>
 
       {/* ── sequência montada ──────────────────────────────────────────────── */}
+      {/* ── catálogo de tabelas do SAP ────────────────────────────────────── */}
+      <TabelasSap
+        onUsar={(texto) => {
+          setModoJson(true)
+          setTextoJson(texto)
+        }}
+      />
+
       {/* ── modelos de read_table ─────────────────────────────────────────── */}
       <Modelos
         onUsar={(texto) => {

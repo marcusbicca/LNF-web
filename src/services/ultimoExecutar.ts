@@ -24,6 +24,7 @@
 // de HOJE, na máquina de quem lançou. Não é dado da NF, é carimbo do momento.
 // Fica vazio, porque inventar o "hoje" de quem está olhando seria pior.
 // ─────────────────────────────────────────────────────────────────────────────
+import { corpoDaPipe } from './envelope'
 import type {
   Divergencias,
   DadosNf,
@@ -90,54 +91,11 @@ export interface ResultadoImport {
 
 // ── o corpo da pipe, tirado dos envelopes ───────────────────────────────────
 //
-// A coluna 'resultado' NUNCA guarda o ExecutarResponse cru. Quem grava é o
-// SolicitacaoRemotaService.Concluir, e ele embrulha:
-//
-//   resultado = { duracao_seg: 12.3, resposta: <corpo da pipe> }
-//
-// A duração não vem da pipe — é cronometrada por quem chamou —, então ela só
-// caberia por fora. O preço é que todo leitor precisa saber disso, e quem não
-// sabia lia `resultado.Nfs`, achava undefined e concluía "sem NFs na resposta"
-// para uma resposta inteira e correta. Falha caladíssima: a lista abria, as
-// linhas apareciam, e todas mentiam do mesmo jeito.
-//
-// Fica numa função só, exportada, porque são três leitores (o mapeamento
-// abaixo, o filtro e o resumo da lista de reabrir) e um quarto vai aparecer.
-// O lerCatalogo já fazia isso sozinho, para o mesmo envelope — era o único que
-// tinha esbarrado nele.
-//
-// Descasca o que se conhece, na ordem em que aparece, e PARA assim que o objeto
-// se parece com um ExecutarResponse — nada de descascar um corpo legítimo que
-// por acaso tenha um campo com nome de envelope.
-export function corpoDaResposta(bruto: unknown): Record<string, unknown> {
-  let v: unknown = bruto
-
-  // Três voltas cobre { resultado: { duracao_seg, resposta: {...} } }, que é o
-  // pior caso real. O teto existe só para que um objeto cíclico ou um formato
-  // inesperado não rode para sempre.
-  for (let i = 0; i < 3; i++) {
-    // jsonb chega desserializado pelo PostgREST, mas o mesmo campo passa por
-    // dois transportes (Edge Function e fluxo do PA) e por colar-JSON à mão.
-    // Aceitar texto custa três linhas.
-    if (typeof v === 'string') {
-      try {
-        v = JSON.parse(v)
-      } catch {
-        return {}
-      }
-      continue
-    }
-
-    const o = obj(v)
-    if (o.Nfs || o.PedidosDict) return o
-
-    const dentro = o.resposta ?? o.resultado ?? o.Resultado
-    if (dentro === undefined || dentro === null) return o
-    v = dentro
-  }
-
-  return obj(v)
-}
+// Mudou de casa: a regra do envelope vive em services/envelope.ts, porque o
+// quarto leitor apareceu (o catálogo de tabelas do SAP) e ela não é assunto do
+// Lançamento. O nome fica aqui como apelido para não mexer em quem já importa
+// daqui — e porque "corpo da resposta" é como este arquivo chama a coisa.
+export const corpoDaResposta = corpoDaPipe
 
 /**
  * Traduz a resposta. `chaveEscolhida` seleciona a NF quando a resposta é
