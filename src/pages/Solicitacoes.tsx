@@ -14,10 +14,9 @@ import {
   type Execucao,
 } from '../services/solicitacoes'
 import {
-  carregar as carregarModelos,
+  carregarComSementes,
   salvar as salvarModelos,
   modeloVazio,
-  semente,
   jsonDoModelo,
   problemasDoModelo,
   type ModeloReadTable,
@@ -1201,12 +1200,11 @@ function LinhaExecucao({ e }: { e: Execucao }) {
 // e é indecifrável em três meses.
 // ─────────────────────────────────────────────────────────────────────────────
 function Modelos({ onUsar }: { onUsar: (texto: string) => void }) {
-  // Primeira visita recebe a semente. Tela vazia não ensina o formato, e o
-  // formato é metade do que se está tentando aprender aqui.
-  const [modelos, setModelos] = useState<ModeloReadTable[]>(() => {
-    const guardados = carregarModelos()
-    return guardados.length > 0 ? guardados : [semente()]
-  })
+  // Primeira visita recebe todas as sementes; quem já tem modelos salvos
+  // recebe só as que ainda não viu. Tela vazia não ensina o formato, e o
+  // formato é metade do que se está tentando aprender aqui. A regra de quando
+  // reacrescentar mora no serviço, junto do resto da persistência.
+  const [modelos, setModelos] = useState<ModeloReadTable[]>(() => carregarComSementes())
   const [editando, setEditando] = useState<string | null>(null)
 
   useEffect(() => {
