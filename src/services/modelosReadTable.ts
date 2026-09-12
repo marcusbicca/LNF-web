@@ -122,10 +122,108 @@ export function salvar(modelos: ModeloReadTable[]): void {
   }
 }
 
-// ── o primeiro modelo ────────────────────────────────────────────────────────
-// Existe porque uma tela vazia não ensina o formato. Este é o de itens de MIGO,
-// que foi o pedido que originou o editor — e serve de gabarito para os
-// próximos: repare que a descrição de cada campo carrega o que o nome esconde.
+// ── as sementes chegando a quem já tem modelos salvos ───────────────────────
+//
+// A tela fazia `guardados.length > 0 ? guardados : [semente()]`. Correto para
+// instalação nova e inútil para todo o resto: quem já tinha UM modelo salvo
+// nunca mais veria os que viessem depois. E "os que vieram depois" é
+// exatamente o caso agora.
+//
+// Então as sementes novas são ACRESCENTADAS, e as existentes ficam como estão
+// — editar um modelo semeado é uso normal, e sobrescrever a edição de alguém
+// para "atualizar" seria o pior jeito de entregar uma melhoria.
+//
+// O marcador guarda quais sementes esta instalação JÁ VIU. Sem ele, uma
+// semente apagada de propósito voltaria em todo carregamento, para sempre —
+// um modelo que não morre é mais irritante que um modelo que falta.
+const CHAVE_SEMENTES = 'lnf.modelos.readtable.sementes.v1'
+
+function jaVistas(): string[] {
+  try {
+    const v = JSON.parse(localStorage.getItem(CHAVE_SEMENTES) || '[]')
+    return Array.isArray(v) ? (v as string[]) : []
+  } catch {
+    return []
+  }
+}
+
+function marcarVistas(ids: string[]): void {
+  try {
+    localStorage.setItem(CHAVE_SEMENTES, JSON.stringify(ids))
+  } catch {
+    /* sem storage, a semente reaparece no próximo load — inofensivo */
+  }
+}
+
+export function carregarComSementes(): ModeloReadTable[] {
+  const todas = sementes()
+  const ids = todas.map((s) => s.id)
+  const guardados = carregar()
+
+  if (guardados.length === 0) {
+    marcarVistas(ids)
+    return todas
+  }
+
+  const vistas = new Set(jaVistas())
+  const tem = new Set(guardados.map((m) => m.id))
+  const novas = todas.filter((s) => !vistas.has(s.id) && !tem.has(s.id))
+
+  marcarVistas(ids)
+  return novas.length > 0 ? [...guardados, ...novas] : guardados
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// OS MODELOS QUE JÁ VÊM PRONTOS
+//
+// Tela vazia não ensina o formato. Cada um destes é uma consulta que já foi
+// precisa, e a descrição de cada campo carrega o que o nome esconde — é o que
+// faz o modelo sobreviver a três meses de esquecimento.
+//
+// ── o que você precisa saber antes de confiar em qualquer um ────────────────
+//
+// Os nomes de campo aqui são os das tabelas MM padrão. Eu NÃO os conferi contra
+// o SAP do Fleury — não há como daqui. Um campo que não exista faz a
+// RFC_READ_TABLE recusar a chamada inteira, com o nome do campo no erro, então
+// o conserto é óbvio quando acontece; mas acontece.
+//
+// E é para isso que existem os dois últimos modelos da lista. Eles leem o
+// DICIONÁRIO DE DADOS do próprio SAP: DD02T diz quais tabelas existem e o que
+// cada uma é, DD03L diz quais campos uma tabela tem. Com eles você confere
+// qualquer campo — e monta modelo novo sem depender de eu ter lembrado certo.
+//
+// ── RFC_READ_TABLE não faz JOIN ─────────────────────────────────────────────
+//
+// Isso molda metade desta lista. "Movimentações de um usuário entre duas datas,
+// filtrando o tipo de movimento" parece uma consulta e são DUAS: usuário e data
+// vivem na MKPF (cabeçalho), tipo de movimento vive na MSEG (item), e não há
+// como cruzá-las numa chamada. O caminho é rodar a primeira, pegar os números
+// de documento, e alimentar a segunda. Os modelos abaixo dizem isso, cada um no
+// seu lugar, porque descobrir sozinho custa uma tarde.
+//
+// ── MATNR vai com zeros à esquerda ──────────────────────────────────────────
+//
+// Material numérico é gravado em 18 caracteres preenchidos com zero: o 12345 é
+// '000000000000012345'. Filtrar por '12345' não acha nada — e não dá erro, o
+// que é pior. Vale para MARA, MARC, MARD, MSEG e MAKT.
+// ═════════════════════════════════════════════════════════════════════════════
+
+const AGORA = () => new Date().toISOString()
+
+/** Todos os modelos que acompanham a instalação, na ordem em que aparecem. */
+export function sementes(): ModeloReadTable[] {
+  return [
+    semente(),
+    migoCabecalho(),
+    materialGeral(),
+    saldoPorDeposito(),
+    movimentacoesDoMaterial(),
+    movimentacoesDoUsuario(),
+    camposDeUmaTabela(),
+    tabelasPorDescricao(),
+  ]
+}
+
 export function semente(): ModeloReadTable {
   return {
     id: 'migo-itens',
@@ -153,5 +251,228 @@ export function semente(): ModeloReadTable {
     camposChave: 'MBLNR, MJAHR, ZEILE',
     custom: false,
     atualizadoEm: new Date().toISOString(),
+  }
+}
+
+// ── MIGO, o cabeçalho ───────────────────────────────────────────────────────
+// O par da MSEG. É aqui que moram a DATA e o USUÁRIO — a MSEG não tem nenhum
+// dos dois, e é por isso que toda pergunta com "quando" ou "quem" começa por
+// esta tabela.
+function migoCabecalho(): ModeloReadTable {
+  return {
+    id: 'migo-cabecalho',
+    nome: 'MIGO — cabeçalho (quem, quando)',
+    tabela: 'MKPF',
+    descricaoTabela:
+      'Cabeçalho do documento de material. Um registro por MIGO; os itens estão na MSEG, ' +
+      'ligados por MBLNR+MJAHR.',
+    campos: [
+      { nome: 'MBLNR', descricao: 'Nº do documento de material (a MIGO)' },
+      { nome: 'MJAHR', descricao: 'Ano do documento' },
+      { nome: 'BLART', descricao: 'Tipo de documento (WE entrada de mercadoria)' },
+      { nome: 'BLDAT', descricao: 'Data do documento (a do papel)' },
+      { nome: 'BUDAT', descricao: 'Data de LANÇAMENTO — é esta que conta para o período' },
+      { nome: 'CPUDT', descricao: 'Data em que foi digitado no sistema' },
+      { nome: 'CPUTM', descricao: 'Hora em que foi digitado' },
+      { nome: 'USNAM', descricao: 'Usuário SAP que lançou' },
+      { nome: 'XBLNR', descricao: 'Referência — costuma trazer o nº da NF' },
+      { nome: 'BKTXT', descricao: 'Texto de cabeçalho' },
+    ],
+    filtro: "MBLNR = '5002365764'\nAND MJAHR = '2026'",
+    camposChave: 'MBLNR, MJAHR',
+    custom: false,
+    atualizadoEm: AGORA(),
+  }
+}
+
+// ── material, dados gerais ──────────────────────────────────────────────────
+function materialGeral(): ModeloReadTable {
+  return {
+    id: 'material-geral',
+    nome: 'Material — dados gerais',
+    tabela: 'MARA',
+    descricaoTabela:
+      'Cadastro geral do material, válido para a empresa toda. A DESCRIÇÃO fica na MAKT ' +
+      '(por idioma), os dados por centro na MARC, o estoque na MARD e as unidades ' +
+      'alternativas na MARM. MATNR vai com zeros à esquerda, 18 posições.',
+    campos: [
+      { nome: 'MATNR', descricao: 'Código do material' },
+      { nome: 'MTART', descricao: 'Tipo de material (ROH, HIBE, FERT…)' },
+      { nome: 'MATKL', descricao: 'Grupo de mercadorias' },
+      { nome: 'MEINS', descricao: 'UNIDADE BASE — é a dela que decide se aceita fração (ver T006)' },
+      { nome: 'BRGEW', descricao: 'Peso bruto' },
+      { nome: 'NTGEW', descricao: 'Peso líquido' },
+      { nome: 'GEWEI', descricao: 'Unidade de peso' },
+      { nome: 'XCHPF', descricao: 'X = material obrigado a LOTE' },
+      { nome: 'LVORM', descricao: 'X = marcado para eliminação' },
+      { nome: 'ERSDA', descricao: 'Data de criação do cadastro' },
+      { nome: 'LAEDA', descricao: 'Data da última alteração' },
+    ],
+    filtro: "MATNR = '000000000000012345'",
+    camposChave: 'MATNR',
+    custom: false,
+    atualizadoEm: AGORA(),
+  }
+}
+
+// ── saldo por centro/depósito ───────────────────────────────────────────────
+function saldoPorDeposito(): ModeloReadTable {
+  return {
+    id: 'saldo-deposito',
+    nome: 'Saldo — por centro e depósito',
+    tabela: 'MARD',
+    descricaoTabela:
+      'Estoque por material, centro e depósito. Uma linha por combinação, e o saldo vem ' +
+      'QUEBRADO por situação — somar tudo não dá o disponível, porque bloqueado e ' +
+      'qualidade não estão disponíveis. Para o saldo por LOTE, a tabela é a MCHB.',
+    campos: [
+      { nome: 'MATNR', descricao: 'Material (18 posições, com zeros à esquerda)' },
+      { nome: 'WERKS', descricao: 'Centro' },
+      { nome: 'LGORT', descricao: 'Depósito' },
+      { nome: 'LABST', descricao: 'LIVRE UTILIZAÇÃO — é este o "saldo" do dia a dia' },
+      { nome: 'INSME', descricao: 'Em controle de qualidade' },
+      { nome: 'SPEME', descricao: 'Bloqueado' },
+      { nome: 'UMLME', descricao: 'Em transferência (dentro do centro)' },
+      { nome: 'EINME', descricao: 'Devolução a fornecedor' },
+      { nome: 'RETME', descricao: 'Bloqueado por devolução' },
+      { nome: 'LVORM', descricao: 'X = marcado para eliminação' },
+    ],
+    filtro: "WERKS = 'C039'\nAND MATNR = '000000000000012345'",
+    camposChave: 'MATNR, WERKS, LGORT',
+    custom: false,
+    atualizadoEm: AGORA(),
+  }
+}
+
+// ── movimentação de um item num centro ──────────────────────────────────────
+function movimentacoesDoMaterial(): ModeloReadTable {
+  return {
+    id: 'mov-material-centro',
+    nome: 'Movimentações — de um material num centro',
+    tabela: 'MSEG',
+    descricaoTabela:
+      'Todo movimento daquele material naquele centro. ATENÇÃO: a MSEG não tem data. ' +
+      'Para recortar por período, rode antes o modelo "Movimentações de um usuário no ' +
+      'período" (ou qualquer consulta na MKPF por BUDAT), pegue os MBLNR e filtre aqui ' +
+      'por eles — a RFC_READ_TABLE não faz JOIN.',
+    campos: [
+      { nome: 'MBLNR', descricao: 'Documento de material — leve à MKPF para saber a data' },
+      { nome: 'MJAHR', descricao: 'Ano do documento' },
+      { nome: 'ZEILE', descricao: 'Item dentro do documento' },
+      { nome: 'BWART', descricao: 'Tipo de movimento (101 entrada, 102 estorno, 261 consumo…)' },
+      { nome: 'SHKZG', descricao: 'S = débito (entrada), H = crédito (saída/estorno)' },
+      { nome: 'MATNR', descricao: 'Material' },
+      { nome: 'WERKS', descricao: 'Centro' },
+      { nome: 'LGORT', descricao: 'Depósito' },
+      { nome: 'CHARG', descricao: 'Lote' },
+      { nome: 'MENGE', descricao: 'Quantidade — o SINAL não vem aqui, vem no SHKZG' },
+      { nome: 'MEINS', descricao: 'Unidade de medida' },
+      { nome: 'DMBTR', descricao: 'Valor em moeda interna' },
+      { nome: 'EBELN', descricao: 'Pedido de compra de origem' },
+      { nome: 'EBELP', descricao: 'Item do pedido' },
+      { nome: 'SMBLN', descricao: 'Documento ESTORNADO por este — preenchido só em estorno' },
+    ],
+    filtro: "MATNR = '000000000000012345'\nAND WERKS = 'C039'",
+    camposChave: 'MBLNR, MJAHR, ZEILE',
+    custom: false,
+    atualizadoEm: AGORA(),
+  }
+}
+
+// ── movimentações de um usuário, num período ────────────────────────────────
+//
+// Este é o modelo com a pegadinha mais cara da lista, e por isso a descrição é
+// a mais longa: a pergunta natural ("o que fulano movimentou em setembro, só
+// entradas") junta três filtros que moram em DUAS tabelas sem JOIN possível.
+function movimentacoesDoUsuario(): ModeloReadTable {
+  return {
+    id: 'mov-usuario-periodo',
+    nome: 'Movimentações — de um usuário, por período (passo 1)',
+    tabela: 'MKPF',
+    descricaoTabela:
+      'PASSO 1 de 2. Usuário e data só existem no cabeçalho, então é aqui que o recorte ' +
+      'começa. O resultado é uma lista de MBLNR+MJAHR. Para filtrar por TIPO DE MOVIMENTO, ' +
+      'leve esses números ao passo 2 (modelo "Movimentações de um material num centro", ' +
+      'trocando o filtro por MBLNR e acrescentando BWART) — o tipo mora na MSEG, e a ' +
+      'RFC_READ_TABLE não cruza tabelas. Datas são texto no formato AAAAMMDD.',
+    campos: [
+      { nome: 'MBLNR', descricao: 'Documento de material — a chave para o passo 2' },
+      { nome: 'MJAHR', descricao: 'Ano do documento' },
+      { nome: 'USNAM', descricao: 'Usuário SAP que lançou' },
+      { nome: 'BUDAT', descricao: 'Data de lançamento (AAAAMMDD)' },
+      { nome: 'CPUDT', descricao: 'Data de digitação — difere da BUDAT em lançamento retroativo' },
+      { nome: 'CPUTM', descricao: 'Hora de digitação' },
+      { nome: 'BLART', descricao: 'Tipo de documento' },
+      { nome: 'XBLNR', descricao: 'Referência — costuma trazer o nº da NF' },
+      { nome: 'BKTXT', descricao: 'Texto de cabeçalho' },
+    ],
+    filtro:
+      "USNAM = 'FULANO'\n" +
+      "AND BUDAT >= '20260901'\n" +
+      "AND BUDAT <= '20260930'",
+    camposChave: 'MBLNR, MJAHR',
+    custom: false,
+    atualizadoEm: AGORA(),
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// OS DOIS METAMODELOS — o SAP descrevendo a si mesmo
+//
+// Estes não respondem pergunta de negócio nenhuma, e são os mais úteis da
+// lista: com eles você para de depender de alguém ter lembrado o nome certo de
+// um campo. O dicionário de dados é tabela como qualquer outra, e a
+// RFC_READ_TABLE lê.
+//
+// É também a resposta à pergunta "dá para pesquisar os campos de uma tabela
+// SAP?": dá, e sem pipe nova — o read_table que já existe basta.
+// ═══════════════════════════════════════════════════════════════════════════
+
+function camposDeUmaTabela(): ModeloReadTable {
+  return {
+    id: 'dd-campos-da-tabela',
+    nome: 'SAP — que campos esta tabela tem?',
+    tabela: 'DD03L',
+    descricaoTabela:
+      'Dicionário de dados: uma linha por campo de uma tabela. Use para conferir um nome ' +
+      'antes de montar um modelo — campo inexistente faz a RFC recusar a chamada inteira. ' +
+      'Para o TEXTO de cada campo, pegue o ROLLNAME daqui e consulte a DD04T ' +
+      "(filtro ROLLNAME = '<elemento>' AND DDLANGUAGE = 'P').",
+    campos: [
+      { nome: 'TABNAME', descricao: 'Tabela' },
+      { nome: 'FIELDNAME', descricao: 'Campo' },
+      { nome: 'POSITION', descricao: 'Ordem do campo na tabela' },
+      { nome: 'KEYFLAG', descricao: 'X = faz parte da CHAVE (serve para CamposChave)' },
+      { nome: 'ROLLNAME', descricao: 'Elemento de dados — é por ele que se acha o texto na DD04T' },
+      { nome: 'DATATYPE', descricao: 'Tipo (CHAR, NUMC, DATS, QUAN, CURR…)' },
+      { nome: 'LENG', descricao: 'Tamanho' },
+      { nome: 'DECIMALS', descricao: 'Casas decimais' },
+    ],
+    filtro: "TABNAME = 'MSEG'",
+    camposChave: 'TABNAME, FIELDNAME',
+    custom: false,
+    atualizadoEm: AGORA(),
+  }
+}
+
+function tabelasPorDescricao(): ModeloReadTable {
+  return {
+    id: 'dd-tabelas-por-descricao',
+    nome: 'SAP — que tabela é esta? (ou: procurar por nome)',
+    tabela: 'DD02T',
+    descricaoTabela:
+      'Descrição das tabelas, por idioma. Serve para os dois sentidos: saber o que uma ' +
+      "tabela é, ou procurar uma pelo nome (TABNAME LIKE 'MS%'). DDLANGUAGE 'P' é " +
+      "português e 'E' inglês — nem toda tabela tem a tradução, então o inglês é o " +
+      'fallback que sempre responde.',
+    campos: [
+      { nome: 'TABNAME', descricao: 'Tabela' },
+      { nome: 'DDLANGUAGE', descricao: 'Idioma do texto' },
+      { nome: 'DDTEXT', descricao: 'Descrição' },
+    ],
+    filtro: "TABNAME = 'MSEG'\nAND DDLANGUAGE = 'P'",
+    camposChave: 'TABNAME, DDLANGUAGE',
+    custom: false,
+    atualizadoEm: AGORA(),
   }
 }
