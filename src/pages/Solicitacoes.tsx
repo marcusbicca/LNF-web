@@ -1314,7 +1314,15 @@ function CartaoModelo({
 
   return (
     <div className="border border-zinc-800 rounded-lg p-3 space-y-2 bg-zinc-950">
-      <div className="flex items-start justify-between gap-2">
+      {/* ── no celular os botões descem, e é por isso ──────────────────────
+          Era uma linha só, com os três botões em shrink-0: eles nunca cediam,
+          então num aparelho de 390px sobravam ~150px para o texto. Nome e
+          descrição viravam duas colunas altas e magras de uma palavra por
+          linha, e o cartão ficava três vezes mais alto do que precisava.
+
+          Empilhar resolve sem custo nenhum na largura em que a linha cabia:
+          de sm para cima continua lado a lado, igual a antes. */}
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0">
           <div className="text-sm font-medium break-words">{modelo.nome || '(sem nome)'}</div>
           <p className="text-xs text-zinc-500 break-words">
@@ -1322,7 +1330,7 @@ function CartaoModelo({
             {modelo.descricaoTabela && ` · ${modelo.descricaoTabela}`}
           </p>
         </div>
-        <div className="flex gap-1.5 shrink-0">
+        <div className="flex gap-1.5 flex-wrap sm:shrink-0">
           <button
             onClick={() => onUsar(texto)}
             disabled={problemas.length > 0}

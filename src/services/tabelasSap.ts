@@ -9,27 +9,34 @@
 // dados do próprio SAP, que não tem como divergir do sistema porque É o
 // sistema.
 //
-// ── e por que isso roda em duas idas, e não numa ────────────────────────────
+// ── um caminho curto e um longo, e o curto se prova sozinho ─────────────────
 //
-// O Coreon ganhou uma pipe 'descrever_tabela' que faz tudo de um lado só. Ela
-// é melhor — uma ida em vez de duas — e NÃO é o que esta tela usa.
+// PREFERIDO: a pipe 'descrever_tabela'. Uma ida só — o Coreon lê DD03L, DD04T
+// e DD02T do lado dele, onde o resultado de uma leitura vira o filtro da
+// seguinte sem passar pela rede.
 //
-// O motivo é o parque: a solicitação vai para o PRIMEIRO Coreon que pegar, e
-// não dá para escolher qual. Numa frota em que parte das máquinas ainda não
-// atualizou, a mesma ação funcionaria ou não conforme quem atendesse — falha
-// intermitente e inexplicável para quem usa. O read_table existe em todo
-// Coreon que está no ar hoje.
+// RESERVA: dois read_table encadeados (DD03L, depois DD04T com os elementos
+// que vieram). Mais lento, e funciona em todo Coreon que existe.
 //
-// Quando o parque estiver atualizado, trocar as duas chamadas abaixo por uma
-// de 'descrever_tabela' é uma função só. Fica anotado em buscarCampos.
+// A reserva não é pessimismo: a solicitação vai para o PRIMEIRO Coreon que
+// pegar, e não dá para escolher qual. Durante a janela em que o parque está
+// atualizando, a mesma ação cairia ora numa máquina nova ora numa velha — e
+// sem a reserva isso apareceria como falha intermitente e inexplicável.
 //
-// ── as duas leituras ────────────────────────────────────────────────────────
+// ── como se decide, sem adivinhar pelo texto ────────────────────────────────
 //
-//   DD03L   os campos: nome, posição, se é chave, tipo, tamanho, decimais
-//   DD04T   o rótulo de cada um, achado pelo ROLLNAME que a DD03L trouxe
+// Coreon que não conhece a ação responde pelo ErroPadrao, que devolve OUTRO
+// FORMATO — o de um lançamento, com MaterialDocument e ReturnMessages, e sem
+// 'Campos'. Coreon que conhece devolve 'Campos' SEMPRE, inclusive quando
+// recusa (lista vazia).
 //
-// A segunda depende do resultado da primeira, e é por isso que são duas: não
-// há como pedir as duas de uma vez sem saber os elementos de dados antes.
+// Então a pergunta é estrutural: veio um array 'Campos'? Sim, a máquina
+// entendeu — inclusive um "não conheço esta tabela", que é resposta legítima
+// e não deve cair na reserva, porque o read_table diria o mesmo. Não veio, a
+// máquina é velha.
+//
+// Casar pela MENSAGEM seria frágil: ela passa pelo ErroPublicoService.Traduzir
+// antes de sair, e o texto não é contrato.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import type { SupabaseService } from './supabase'
@@ -169,11 +176,64 @@ export interface OpcoesBusca {
 /**
  * Pergunta ao primeiro Coreon disponível quais são os campos da tabela.
  *
- * Duas solicitações encadeadas, e nenhuma precisa cair na MESMA máquina: o
- * read_table não guarda estado entre chamadas, então qualquer Coreon com o SAP
- * logado responde qualquer passo. É o que permite não endereçar destinatário.
+ * Tenta a pipe 'descrever_tabela' e, se quem atendeu não a conhecer, refaz
+ * pelo caminho longo. Ver a nota do topo sobre por que a decisão é
+ * estrutural, e não pelo texto do erro.
  */
 export async function buscarCampos(
+  sol: SolicitacoesService,
+  tabela: string,
+  opts: OpcoesBusca,
+): Promise<CampoSap[]> {
+  const nome = tabela.trim().toUpperCase()
+  opts.onPasso?.(`Perguntando os campos de ${nome} ao Coreon…`)
+
+  const s = await sol.criarEAguardar(
+    {
+      sessaoId: opts.sessaoId,
+      destinatario: opts.destinatario,
+      sapUsuario: opts.sapUsuario,
+      sapSenha: opts.sapSenha,
+      acao: 'descrever_tabela',
+      payload: { tabela: nome },
+    },
+    { timeoutMs: opts.timeoutMs ?? 4 * 60 * 1000 },
+  )
+
+  if (s.status === 'concluida') {
+    const corpo = corpoDaPipe(s.resultado)
+
+    if (Array.isArray(corpo.Campos)) {
+      // A máquina entendeu a ação. O que ela disser vale — inclusive a recusa.
+      if (corpo.Sucesso === false)
+        throw new Error(txt(corpo.Mensagem) || `Não consegui os campos de ${nome}.`)
+
+      return (corpo.Campos as Record<string, unknown>[]).map((c) => ({
+        nome: txt(c.Nome).toUpperCase(),
+        descricao: txt(c.Descricao),
+        chave: c.Chave === true,
+        tipo: txt(c.Tipo),
+        tamanho: int(c.Tamanho),
+        decimais: int(c.Decimais),
+      }))
+    }
+
+    opts.onPasso?.('Quem atendeu ainda não tem essa ação — indo pelo caminho longo…')
+  }
+
+  return buscarCamposPorReadTable(sol, nome, opts)
+}
+
+/**
+ * O caminho longo: DD03L e depois DD04T, dois read_table encadeados.
+ *
+ * Nenhum dos dois precisa cair na MESMA máquina — o read_table não guarda
+ * estado entre chamadas, então qualquer Coreon com o SAP logado responde
+ * qualquer passo. É o que permite não endereçar destinatário.
+ *
+ * Some no dia em que não houver mais Coreon sem 'descrever_tabela'.
+ */
+async function buscarCamposPorReadTable(
   sol: SolicitacoesService,
   tabela: string,
   opts: OpcoesBusca,
