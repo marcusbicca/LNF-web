@@ -247,19 +247,44 @@ export async function buscarCampos(
   opts: OpcoesBusca,
 ): Promise<CampoSap[]> {
   const nome = tabela.trim().toUpperCase()
-  opts.onPasso?.(`Perguntando os campos de ${nome} ao Coreon…`)
+  const timeoutMs = opts.timeoutMs ?? 4 * 60 * 1000
 
-  const s = await sol.criarEAguardar(
-    {
-      sessaoId: opts.sessaoId,
-      destinatario: opts.destinatario,
-      sapUsuario: opts.sapUsuario,
-      sapSenha: opts.sapSenha,
-      acao: 'descrever_tabela',
-      payload: { tabela: nome },
-    },
-    { timeoutMs: opts.timeoutMs ?? 4 * 60 * 1000 },
-  )
+  const comum = {
+    ...(opts.destinatario ? { destinatario: opts.destinatario } : {}),
+    ...(opts.sapUsuario ? { sapUsuario: opts.sapUsuario } : {}),
+    ...(opts.sapSenha ? { sapSenha: opts.sapSenha } : {}),
+  }
+
+  // ── a sessão precisa ser ABERTA, e vai no mesmo lote ──────────────────────
+  //
+  // Era daqui que saía o SESSAO_EXPIRADA: eu mandava um sessaoId novo direto
+  // no 'descrever_tabela', e o Coreon recusa qualquer id que ele não conheça
+  // quando o passo NÃO é o de abertura (SessaoService.EscopoOuCriar).
+  //
+  // Um id inédito sem abertura é o pior dos dois mundos. As opções boas eram:
+  // mandar SEM id nenhum — e aí o Coreon abre uma sessão descartável na hora,
+  // que é tudo o que uma leitura precisa — ou abrir de verdade. Fica a
+  // segunda, por dois motivos:
+  //
+  //   1. O SolicitacoesService exige sessaoId de toda solicitação não
+  //      universal, porque é por (sessao_id, acao) que a resposta é
+  //      encontrada. Sem id, a espera não teria como achar o resultado.
+  //
+  //   2. O caminho longo (read_table) precisa de DUAS idas encadeadas, e a
+  //      segunda tem que cair na MESMA máquina que a primeira — senão pode
+  //      atender um Coreon sem SAP logado. A regra de afinidade do
+  //      pegar_solicitacao garante isso pela sessão.
+  //
+  // No mesmo lote, e não em duas chamadas: o banco só libera o segundo passo
+  // quando o primeiro conclui, e só para quem pegou o primeiro.
+  opts.onPasso?.(`Abrindo sessão e perguntando os campos de ${nome}…`)
+
+  await sol.criarSequencia(opts.sessaoId, [
+    { acao: 'iniciar_sessao', payload: { IncluirPipes: false }, ...comum },
+    { acao: 'descrever_tabela', payload: { tabela: nome }, ...comum },
+  ])
+
+  const s = await sol.aguardarNaSessao(opts.sessaoId, 'descrever_tabela', 0, { timeoutMs })
 
   if (s.status === 'concluida') {
     const corpo = corpoDaPipe(s.resultado)
@@ -281,9 +306,10 @@ export async function buscarCampos(
 /**
  * O caminho longo: DD03L e depois DD04T, dois read_table encadeados.
  *
- * Nenhum dos dois precisa cair na MESMA máquina — o read_table não guarda
- * estado entre chamadas, então qualquer Coreon com o SAP logado responde
- * qualquer passo. É o que permite não endereçar destinatário.
+ * Só é chamado DEPOIS do buscarCampos, então a sessão já está aberta — e é
+ * ela que faz as duas leituras caírem na mesma máquina. Isso importa mais do
+ * que parece: a segunda pode precisar do SAP logado, e sem afinidade ela
+ * poderia ser atendida por um Coreon que não tem.
  *
  * Some no dia em que não houver mais Coreon sem 'descrever_tabela'.
  */
