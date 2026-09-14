@@ -36,6 +36,7 @@ import {
   salvarCampos,
   removerTabela,
   buscarCampos,
+  respostaPronta,
   type TabelaSap,
   type CampoSap,
 } from '../services/tabelasSap'
@@ -169,6 +170,45 @@ export function TabelasSap({ onUsar }: { onUsar: (texto: string) => void }) {
       setStatus(
         `${t.tabela}: ${campos.length} campo(s), ` +
           `${campos.filter((c) => c.chave).length} de chave. Guardado no catálogo.`,
+      )
+      setAberta(t.tabela)
+      await recarregar()
+    } catch (e) {
+      setErro(`${t.tabela}: ${(e as Error).message}`)
+      setStatus(null)
+    } finally {
+      setBuscando(null)
+    }
+  }
+
+  // ── a resposta que já está no banco ───────────────────────────────────────
+  //
+  // Se a espera morreu (página recarregada, navegador fechado), a máquina
+  // respondeu assim mesmo e a linha ficou concluída sem ninguém aproveitar.
+  // Aquela resposta custou uma ida a uma máquina com SAP — o recurso escasso
+  // aqui —, então dá para resgatá-la em vez de gastar outra.
+  async function resgatar(t: TabelaSap) {
+    if (!sol || !svc) {
+      setErro('Configure o transporte em Configurações.')
+      return
+    }
+    setBuscando(t.tabela)
+    setErro(null)
+    setStatus(`Procurando uma resposta pronta para ${t.tabela}…`)
+    try {
+      const pronta = await respostaPronta(sol, t.tabela)
+      if (!pronta) {
+        setStatus(null)
+        setErro(
+          `Nenhuma resposta pronta para ${t.tabela}. Use "Buscar campos" para pedir uma.`,
+        )
+        return
+      }
+      await salvarCampos(svc, t.empresa, t.tabela, pronta.campos, config?.usuario ?? '')
+      setStatus(
+        `${t.tabela}: ${pronta.campos.length} campo(s) de uma resposta ` +
+          `de ${new Date(pronta.quando).toLocaleString('pt-BR')}` +
+          `${pronta.executor ? ` (${pronta.executor})` : ''}. Guardado no catálogo.`,
       )
       setAberta(t.tabela)
       await recarregar()
@@ -351,6 +391,15 @@ export function TabelasSap({ onUsar }: { onUsar: (texto: string) => void }) {
                     title="Pergunta ao primeiro Coreon livre quais são os campos desta tabela."
                   >
                     {buscando === t.tabela ? 'Buscando…' : nunca ? 'Buscar campos' : 'Atualizar'}
+                  </button>
+                  <button
+                    onClick={() => void resgatar(t)}
+                    disabled={buscando !== null}
+                    className="px-2 py-1 rounded bg-zinc-800 hover:bg-zinc-700 disabled:opacity-40 text-xs"
+                    title="Aproveita uma resposta que já foi respondida antes — serve quando a
+                           página foi recarregada no meio da espera."
+                  >
+                    ↺
                   </button>
                   <button
                     onClick={() => void remover(t)}

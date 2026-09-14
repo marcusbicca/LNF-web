@@ -180,6 +180,67 @@ export interface OpcoesBusca {
  * pelo caminho longo. Ver a nota do topo sobre por que a decisão é
  * estrutural, e não pelo texto do erro.
  */
+/** Traduz o corpo de um 'descrever_tabela' para os campos do catálogo. */
+function camposDaResposta(resultado: unknown): CampoSap[] | null {
+  const corpo = corpoDaPipe(resultado)
+  if (!Array.isArray(corpo.Campos)) return null
+  if (corpo.Sucesso === false) return null
+
+  return (corpo.Campos as Record<string, unknown>[]).map((c) => ({
+    nome: txt(c.Nome).toUpperCase(),
+    descricao: txt(c.Descricao),
+    chave: c.Chave === true,
+    tipo: txt(c.Tipo),
+    tamanho: int(c.Tamanho),
+    decimais: int(c.Decimais),
+  }))
+}
+
+// ── a resposta que já chegou, e que ninguém estava esperando ────────────────
+//
+// A espera do buscarCampos vive na aba. Trocar de aba não a mata (o App monta
+// a página uma vez e só esconde com `hidden`), mas recarregar a página ou
+// fechar o navegador mata — e aí a máquina responde, a linha fica concluída no
+// banco, e o resultado não é aproveitado por ninguém.
+//
+// É desperdício caro: aquela resposta custou uma ida a uma máquina com SAP, que
+// é justamente o recurso escasso.
+//
+// Então dá para ir buscar depois. O par (ação, tabela) identifica o pedido sem
+// precisar guardar nada do lado de cá: o filtro é pelo próprio payload que foi
+// enviado, e o `listar` já devolve id.desc — a primeira que casar é a mais
+// recente.
+export interface RespostaPronta {
+  campos: CampoSap[]
+  quando: string
+  executor: string | null
+}
+
+export async function respostaPronta(
+  sol: SolicitacoesService,
+  tabela: string,
+): Promise<RespostaPronta | null> {
+  const nome = tabela.trim().toUpperCase()
+
+  const linhas = await sol.listar({
+    limit: 10,
+    filtros:
+      'acao=eq.descrever_tabela&status=eq.concluida' +
+      `&payload->>tabela=eq.${encodeURIComponent(nome)}`,
+  })
+
+  for (const l of linhas) {
+    const campos = camposDaResposta(l.resultado)
+    // Resposta concluída PODE não ter campos: a máquina pode ter respondido
+    // "não conheço essa tabela". Isso é uma resposta legítima e não serve para
+    // preencher o catálogo — segue procurando uma que sirva.
+    if (campos && campos.length > 0)
+      return { campos, quando: l.terminado_em || l.criado_em, executor: l.executor }
+  }
+
+  return null
+}
+
 export async function buscarCampos(
   sol: SolicitacoesService,
   tabela: string,
@@ -208,14 +269,7 @@ export async function buscarCampos(
       if (corpo.Sucesso === false)
         throw new Error(txt(corpo.Mensagem) || `Não consegui os campos de ${nome}.`)
 
-      return (corpo.Campos as Record<string, unknown>[]).map((c) => ({
-        nome: txt(c.Nome).toUpperCase(),
-        descricao: txt(c.Descricao),
-        chave: c.Chave === true,
-        tipo: txt(c.Tipo),
-        tamanho: int(c.Tamanho),
-        decimais: int(c.Decimais),
-      }))
+      return camposDaResposta(s.resultado) ?? []
     }
 
     opts.onPasso?.('Quem atendeu ainda não tem essa ação — indo pelo caminho longo…')
