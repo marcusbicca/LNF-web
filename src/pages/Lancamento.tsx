@@ -1220,7 +1220,6 @@ function Importar({ onCarregar }: { onCarregar: (e: EstadoLancamento) => void })
       .map((p) => p.trim())
       .filter(Boolean)
 
-    if (!alvo) return setErro('Informe o usuário Windows da máquina que vai rodar.')
     if (chaveLimpa.length !== 44) return setErro('A chave da NF precisa ter 44 dígitos.')
     if (!!sapUsuario.trim() !== !!sapSenha.trim())
       return setErro(
@@ -1247,8 +1246,24 @@ function Importar({ onCarregar }: { onCarregar: (e: EstadoLancamento) => void })
       // — cai calado no login do operador da máquina, e a ação sai no nome
       // dele. É o tipo de falha que só se descobre lendo o histórico depois.
       const usarCred = !!sapUsuario.trim() && !!sapSenha.trim()
+
+      // ── máquina em branco = a primeira que pegar ──────────────────────
+      //
+      // Mesma regra das Solicitações, e é do banco, não da tela: o
+      // pegar_solicitacao só filtra por destinatário quando ele existe
+      // (`destinatario is null or lower(btrim(destinatario)) = executor`).
+      // Coluna nula é "qualquer uma".
+      //
+      // O campo é OMITIDO, e não mandado vazio: o criarSequencia só
+      // preenche a coluna quando o valor é verdadeiro, então string vazia
+      // já daria nulo — mas escrever a intenção aqui evita que alguém
+      // "conserte" isso mandando '' de propósito um dia.
+      //
+      // E os TRÊS passos continuam na mesma máquina mesmo sem endereço: é
+      // o lote que garante isso, não o destinatário. O banco só libera o
+      // segundo quando o primeiro conclui, e só para quem pegou o primeiro.
       const comum = {
-        destinatario: alvo,
+        ...(alvo ? { destinatario: alvo } : {}),
         ...(usarCred ? { sapUsuario: sapUsuario.trim(), sapSenha: sapSenha.trim() } : {}),
       }
 
@@ -1360,12 +1375,12 @@ function Importar({ onCarregar }: { onCarregar: (e: EstadoLancamento) => void })
               </label>
               <label className="block">
                 <span className="block text-[11px] text-zinc-500 mb-0.5">
-                  Máquina (usuário Windows)
+                  Máquina <span className="text-zinc-600">(opcional — usuário Windows)</span>
                 </span>
                 <input
                   value={destinatario}
                   onChange={(e) => setDestinatario(e.target.value)}
-                  placeholder="israel.santos"
+                  placeholder="em branco = a primeira que pegar"
                   className="w-full bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:border-green-500"
                 />
               </label>

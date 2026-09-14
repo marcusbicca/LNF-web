@@ -36,11 +36,13 @@ import {
   salvarCampos,
   removerTabela,
   buscarCampos,
+  respostaPronta,
   type TabelaSap,
   type CampoSap,
 } from '../services/tabelasSap'
 
 const CHAVE_EMPRESA = 'lnf.tabelasSap.empresa'
+const CHAVE_ABERTO  = 'lnf.tabelasSap.aberto'
 
 // Os códigos que o Coreon conhece (EmpresaService). Não há tela de cadastro de
 // empresa, e inventar uma aqui criaria catálogo órfão que ninguém mais vê.
@@ -66,6 +68,22 @@ export function TabelasSap({ onUsar }: { onUsar: (texto: string) => void }) {
       return localStorage.getItem(CHAVE_EMPRESA) || EMPRESA_PADRAO
     } catch {
       return EMPRESA_PADRAO
+    }
+  })
+
+  // ── recolhido por padrão ─────────────────────────────────────────────────
+  //
+  // O catálogo tem 17 tabelas semeadas e cresce. Num celular isso é uma parede
+  // entre quem abre a aba Solicitações e o que ele veio fazer, e a seção mais
+  // usada — o formulário de envio — fica abaixo dela.
+  //
+  // A escolha é lembrada: quem usa o catálogo o tempo todo abre uma vez e ele
+  // continua aberto. Fechado é só o PADRÃO, não uma opinião sobre o uso.
+  const [painelAberto, setPainelAberto] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(CHAVE_ABERTO) === '1'
+    } catch {
+      return false
     }
   })
 
@@ -100,6 +118,14 @@ export function TabelasSap({ onUsar }: { onUsar: (texto: string) => void }) {
     }
   }, [empresa])
 
+  useEffect(() => {
+    try {
+      localStorage.setItem(CHAVE_ABERTO, painelAberto ? '1' : '0')
+    } catch {
+      /* idem */
+    }
+  }, [painelAberto])
+
   async function recarregar() {
     if (!svc) return
     setCarregando(true)
@@ -113,10 +139,17 @@ export function TabelasSap({ onUsar }: { onUsar: (texto: string) => void }) {
     }
   }
 
+  // Só consulta quando o painel está ABERTO — e é o mesmo princípio que o App
+  // usa para não montar as oito páginas de uma vez: página fechada não pede
+  // dado, e cada pedido daqui é uma leitura no Supabase.
+  //
+  // Fechado por padrão, então a primeira carga acontece no primeiro clique em
+  // abrir, não na abertura da aba.
   useEffect(() => {
+    if (!painelAberto) return
     void recarregar()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [svc, empresa])
+  }, [svc, empresa, painelAberto])
 
   async function adicionar() {
     const nome = novaTabela.trim().toUpperCase()
@@ -180,6 +213,45 @@ export function TabelasSap({ onUsar }: { onUsar: (texto: string) => void }) {
     }
   }
 
+  // ── a resposta que já está no banco ───────────────────────────────────────
+  //
+  // Se a espera morreu (página recarregada, navegador fechado), a máquina
+  // respondeu assim mesmo e a linha ficou concluída sem ninguém aproveitar.
+  // Aquela resposta custou uma ida a uma máquina com SAP — o recurso escasso
+  // aqui —, então dá para resgatá-la em vez de gastar outra.
+  async function resgatar(t: TabelaSap) {
+    if (!sol || !svc) {
+      setErro('Configure o transporte em Configurações.')
+      return
+    }
+    setBuscando(t.tabela)
+    setErro(null)
+    setStatus(`Procurando uma resposta pronta para ${t.tabela}…`)
+    try {
+      const pronta = await respostaPronta(sol, t.tabela)
+      if (!pronta) {
+        setStatus(null)
+        setErro(
+          `Nenhuma resposta pronta para ${t.tabela}. Use "Buscar campos" para pedir uma.`,
+        )
+        return
+      }
+      await salvarCampos(svc, t.empresa, t.tabela, pronta.campos, config?.usuario ?? '')
+      setStatus(
+        `${t.tabela}: ${pronta.campos.length} campo(s) de uma resposta ` +
+          `de ${new Date(pronta.quando).toLocaleString('pt-BR')}` +
+          `${pronta.executor ? ` (${pronta.executor})` : ''}. Guardado no catálogo.`,
+      )
+      setAberta(t.tabela)
+      await recarregar()
+    } catch (e) {
+      setErro(`${t.tabela}: ${(e as Error).message}`)
+      setStatus(null)
+    } finally {
+      setBuscando(null)
+    }
+  }
+
   function alternarCampo(tabela: string, campo: string) {
     setMarcados((m) => {
       const atual = new Set(m[tabela] ?? [])
@@ -225,9 +297,23 @@ export function TabelasSap({ onUsar }: { onUsar: (texto: string) => void }) {
 
   return (
     <section className="border border-zinc-800 rounded p-4 space-y-3">
-      <div className="flex flex-wrap items-center gap-2">
+      {/* O cabeçalho é o botão inteiro, e não só a setinha: num celular um
+          alvo de 12px é um convite a errar o toque. */}
+      <button
+        onClick={() => setPainelAberto((v) => !v)}
+        className="w-full flex items-center gap-2 text-left"
+      >
+        <span className="text-zinc-500">{painelAberto ? '▾' : '▸'}</span>
         <h2 className="font-semibold">Tabelas do SAP</h2>
+        <span className="ml-auto text-xs text-zinc-600">
+          {empresa}
+          {tabelas ? ` · ${tabelas.length}` : ''}
+        </span>
+      </button>
 
+      {painelAberto && (
+      <>
+      <div className="flex flex-wrap items-center gap-2">
         <select
           value={empresa}
           onChange={(e) => setEmpresa(e.target.value)}
@@ -353,6 +439,15 @@ export function TabelasSap({ onUsar }: { onUsar: (texto: string) => void }) {
                     {buscando === t.tabela ? 'Buscando…' : nunca ? 'Buscar campos' : 'Atualizar'}
                   </button>
                   <button
+                    onClick={() => void resgatar(t)}
+                    disabled={buscando !== null}
+                    className="px-2 py-1 rounded bg-zinc-800 hover:bg-zinc-700 disabled:opacity-40 text-xs"
+                    title="Aproveita uma resposta que já foi respondida antes — serve quando a
+                           página foi recarregada no meio da espera."
+                  >
+                    ↺
+                  </button>
+                  <button
                     onClick={() => void remover(t)}
                     className="px-2 py-1 rounded text-zinc-600 hover:text-red-400 text-xs"
                     title="Tirar do catálogo"
@@ -455,6 +550,8 @@ export function TabelasSap({ onUsar }: { onUsar: (texto: string) => void }) {
           + tabela
         </button>
       </div>
+      </>
+      )}
     </section>
   )
 }

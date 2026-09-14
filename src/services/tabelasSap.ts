@@ -180,25 +180,111 @@ export interface OpcoesBusca {
  * pelo caminho longo. Ver a nota do topo sobre por que a decisão é
  * estrutural, e não pelo texto do erro.
  */
+/** Traduz o corpo de um 'descrever_tabela' para os campos do catálogo. */
+function camposDaResposta(resultado: unknown): CampoSap[] | null {
+  const corpo = corpoDaPipe(resultado)
+  if (!Array.isArray(corpo.Campos)) return null
+  if (corpo.Sucesso === false) return null
+
+  return (corpo.Campos as Record<string, unknown>[]).map((c) => ({
+    nome: txt(c.Nome).toUpperCase(),
+    descricao: txt(c.Descricao),
+    chave: c.Chave === true,
+    tipo: txt(c.Tipo),
+    tamanho: int(c.Tamanho),
+    decimais: int(c.Decimais),
+  }))
+}
+
+// ── a resposta que já chegou, e que ninguém estava esperando ────────────────
+//
+// A espera do buscarCampos vive na aba. Trocar de aba não a mata (o App monta
+// a página uma vez e só esconde com `hidden`), mas recarregar a página ou
+// fechar o navegador mata — e aí a máquina responde, a linha fica concluída no
+// banco, e o resultado não é aproveitado por ninguém.
+//
+// É desperdício caro: aquela resposta custou uma ida a uma máquina com SAP, que
+// é justamente o recurso escasso.
+//
+// Então dá para ir buscar depois. O par (ação, tabela) identifica o pedido sem
+// precisar guardar nada do lado de cá: o filtro é pelo próprio payload que foi
+// enviado, e o `listar` já devolve id.desc — a primeira que casar é a mais
+// recente.
+export interface RespostaPronta {
+  campos: CampoSap[]
+  quando: string
+  executor: string | null
+}
+
+export async function respostaPronta(
+  sol: SolicitacoesService,
+  tabela: string,
+): Promise<RespostaPronta | null> {
+  const nome = tabela.trim().toUpperCase()
+
+  const linhas = await sol.listar({
+    limit: 10,
+    filtros:
+      'acao=eq.descrever_tabela&status=eq.concluida' +
+      `&payload->>tabela=eq.${encodeURIComponent(nome)}`,
+  })
+
+  for (const l of linhas) {
+    const campos = camposDaResposta(l.resultado)
+    // Resposta concluída PODE não ter campos: a máquina pode ter respondido
+    // "não conheço essa tabela". Isso é uma resposta legítima e não serve para
+    // preencher o catálogo — segue procurando uma que sirva.
+    if (campos && campos.length > 0)
+      return { campos, quando: l.terminado_em || l.criado_em, executor: l.executor }
+  }
+
+  return null
+}
+
 export async function buscarCampos(
   sol: SolicitacoesService,
   tabela: string,
   opts: OpcoesBusca,
 ): Promise<CampoSap[]> {
   const nome = tabela.trim().toUpperCase()
-  opts.onPasso?.(`Perguntando os campos de ${nome} ao Coreon…`)
+  const timeoutMs = opts.timeoutMs ?? 4 * 60 * 1000
 
-  const s = await sol.criarEAguardar(
-    {
-      sessaoId: opts.sessaoId,
-      destinatario: opts.destinatario,
-      sapUsuario: opts.sapUsuario,
-      sapSenha: opts.sapSenha,
-      acao: 'descrever_tabela',
-      payload: { tabela: nome },
-    },
-    { timeoutMs: opts.timeoutMs ?? 4 * 60 * 1000 },
-  )
+  const comum = {
+    ...(opts.destinatario ? { destinatario: opts.destinatario } : {}),
+    ...(opts.sapUsuario ? { sapUsuario: opts.sapUsuario } : {}),
+    ...(opts.sapSenha ? { sapSenha: opts.sapSenha } : {}),
+  }
+
+  // ── a sessão precisa ser ABERTA, e vai no mesmo lote ──────────────────────
+  //
+  // Era daqui que saía o SESSAO_EXPIRADA: eu mandava um sessaoId novo direto
+  // no 'descrever_tabela', e o Coreon recusa qualquer id que ele não conheça
+  // quando o passo NÃO é o de abertura (SessaoService.EscopoOuCriar).
+  //
+  // Um id inédito sem abertura é o pior dos dois mundos. As opções boas eram:
+  // mandar SEM id nenhum — e aí o Coreon abre uma sessão descartável na hora,
+  // que é tudo o que uma leitura precisa — ou abrir de verdade. Fica a
+  // segunda, por dois motivos:
+  //
+  //   1. O SolicitacoesService exige sessaoId de toda solicitação não
+  //      universal, porque é por (sessao_id, acao) que a resposta é
+  //      encontrada. Sem id, a espera não teria como achar o resultado.
+  //
+  //   2. O caminho longo (read_table) precisa de DUAS idas encadeadas, e a
+  //      segunda tem que cair na MESMA máquina que a primeira — senão pode
+  //      atender um Coreon sem SAP logado. A regra de afinidade do
+  //      pegar_solicitacao garante isso pela sessão.
+  //
+  // No mesmo lote, e não em duas chamadas: o banco só libera o segundo passo
+  // quando o primeiro conclui, e só para quem pegou o primeiro.
+  opts.onPasso?.(`Abrindo sessão e perguntando os campos de ${nome}…`)
+
+  await sol.criarSequencia(opts.sessaoId, [
+    { acao: 'iniciar_sessao', payload: { IncluirPipes: false }, ...comum },
+    { acao: 'descrever_tabela', payload: { tabela: nome }, ...comum },
+  ])
+
+  const s = await sol.aguardarNaSessao(opts.sessaoId, 'descrever_tabela', 0, { timeoutMs })
 
   if (s.status === 'concluida') {
     const corpo = corpoDaPipe(s.resultado)
@@ -208,14 +294,7 @@ export async function buscarCampos(
       if (corpo.Sucesso === false)
         throw new Error(txt(corpo.Mensagem) || `Não consegui os campos de ${nome}.`)
 
-      return (corpo.Campos as Record<string, unknown>[]).map((c) => ({
-        nome: txt(c.Nome).toUpperCase(),
-        descricao: txt(c.Descricao),
-        chave: c.Chave === true,
-        tipo: txt(c.Tipo),
-        tamanho: int(c.Tamanho),
-        decimais: int(c.Decimais),
-      }))
+      return camposDaResposta(s.resultado) ?? []
     }
 
     opts.onPasso?.('Quem atendeu ainda não tem essa ação — indo pelo caminho longo…')
@@ -227,9 +306,10 @@ export async function buscarCampos(
 /**
  * O caminho longo: DD03L e depois DD04T, dois read_table encadeados.
  *
- * Nenhum dos dois precisa cair na MESMA máquina — o read_table não guarda
- * estado entre chamadas, então qualquer Coreon com o SAP logado responde
- * qualquer passo. É o que permite não endereçar destinatário.
+ * Só é chamado DEPOIS do buscarCampos, então a sessão já está aberta — e é
+ * ela que faz as duas leituras caírem na mesma máquina. Isso importa mais do
+ * que parece: a segunda pode precisar do SAP logado, e sem afinidade ela
+ * poderia ser atendida por um Coreon que não tem.
  *
  * Some no dia em que não houver mais Coreon sem 'descrever_tabela'.
  */
