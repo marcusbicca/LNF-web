@@ -42,6 +42,7 @@ import {
 } from '../services/tabelasSap'
 
 const CHAVE_EMPRESA = 'lnf.tabelasSap.empresa'
+const CHAVE_ABERTO  = 'lnf.tabelasSap.aberto'
 
 // Os códigos que o Coreon conhece (EmpresaService). Não há tela de cadastro de
 // empresa, e inventar uma aqui criaria catálogo órfão que ninguém mais vê.
@@ -67,6 +68,22 @@ export function TabelasSap({ onUsar }: { onUsar: (texto: string) => void }) {
       return localStorage.getItem(CHAVE_EMPRESA) || EMPRESA_PADRAO
     } catch {
       return EMPRESA_PADRAO
+    }
+  })
+
+  // ── recolhido por padrão ─────────────────────────────────────────────────
+  //
+  // O catálogo tem 17 tabelas semeadas e cresce. Num celular isso é uma parede
+  // entre quem abre a aba Solicitações e o que ele veio fazer, e a seção mais
+  // usada — o formulário de envio — fica abaixo dela.
+  //
+  // A escolha é lembrada: quem usa o catálogo o tempo todo abre uma vez e ele
+  // continua aberto. Fechado é só o PADRÃO, não uma opinião sobre o uso.
+  const [painelAberto, setPainelAberto] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(CHAVE_ABERTO) === '1'
+    } catch {
+      return false
     }
   })
 
@@ -101,6 +118,14 @@ export function TabelasSap({ onUsar }: { onUsar: (texto: string) => void }) {
     }
   }, [empresa])
 
+  useEffect(() => {
+    try {
+      localStorage.setItem(CHAVE_ABERTO, painelAberto ? '1' : '0')
+    } catch {
+      /* idem */
+    }
+  }, [painelAberto])
+
   async function recarregar() {
     if (!svc) return
     setCarregando(true)
@@ -114,10 +139,17 @@ export function TabelasSap({ onUsar }: { onUsar: (texto: string) => void }) {
     }
   }
 
+  // Só consulta quando o painel está ABERTO — e é o mesmo princípio que o App
+  // usa para não montar as oito páginas de uma vez: página fechada não pede
+  // dado, e cada pedido daqui é uma leitura no Supabase.
+  //
+  // Fechado por padrão, então a primeira carga acontece no primeiro clique em
+  // abrir, não na abertura da aba.
   useEffect(() => {
+    if (!painelAberto) return
     void recarregar()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [svc, empresa])
+  }, [svc, empresa, painelAberto])
 
   async function adicionar() {
     const nome = novaTabela.trim().toUpperCase()
@@ -265,9 +297,23 @@ export function TabelasSap({ onUsar }: { onUsar: (texto: string) => void }) {
 
   return (
     <section className="border border-zinc-800 rounded p-4 space-y-3">
-      <div className="flex flex-wrap items-center gap-2">
+      {/* O cabeçalho é o botão inteiro, e não só a setinha: num celular um
+          alvo de 12px é um convite a errar o toque. */}
+      <button
+        onClick={() => setPainelAberto((v) => !v)}
+        className="w-full flex items-center gap-2 text-left"
+      >
+        <span className="text-zinc-500">{painelAberto ? '▾' : '▸'}</span>
         <h2 className="font-semibold">Tabelas do SAP</h2>
+        <span className="ml-auto text-xs text-zinc-600">
+          {empresa}
+          {tabelas ? ` · ${tabelas.length}` : ''}
+        </span>
+      </button>
 
+      {painelAberto && (
+      <>
+      <div className="flex flex-wrap items-center gap-2">
         <select
           value={empresa}
           onChange={(e) => setEmpresa(e.target.value)}
@@ -504,6 +550,8 @@ export function TabelasSap({ onUsar }: { onUsar: (texto: string) => void }) {
           + tabela
         </button>
       </div>
+      </>
+      )}
     </section>
   )
 }
