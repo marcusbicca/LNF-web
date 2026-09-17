@@ -30,6 +30,13 @@
 
 import { SupabaseService } from './supabase'
 
+// O banco compara em minúsculas (lower(btrim(...)) contra o usuário Windows da
+// máquina). Normalizar aqui evita o modo de falha mais chato possível: a
+// exclusão que não exclui porque alguém digitou uma maiúscula.
+export function normalizarExcluidos(nomes: string[]): string[] {
+  return [...new Set(nomes.map((n) => n.trim().toLowerCase()).filter(Boolean))]
+}
+
 export const TABELA_ESCRITA = 'solicitacoes'
 export const VIEW_LEITURA = 'solicitacoes_painel'
 
@@ -50,6 +57,8 @@ export interface Solicitacao {
   sessao_id: string | null
   /** Agrupa os passos de uma sequência. null = envio avulso. */
   lote: string | null
+  /** Quem foi impedido de pegar esta. Ver NovaSolicitacao.excluidos. */
+  excluidos: string[] | null
   sap_usuario: string | null
   tem_senha: boolean
   status: StatusSolicitacao
@@ -71,6 +80,17 @@ export interface NovaSolicitacao {
   sapSenha?: string
   /** Vale para TODOS os usuários e fica em pé até ser encerrada. */
   universal?: boolean
+  /**
+   * Quem NÃO pode pegar. O avesso do destinatario: aquele diz "só fulano",
+   * este diz "qualquer um MENOS fulano".
+   *
+   * Existe porque nem toda capacidade é conhecida antes de tentar — se a
+   * máquina que pegou não tem autorização na LFA1, isso só aparece no
+   * NOT_AUTHORIZED de volta. Reabrir sem dono costuma cair na mesma máquina,
+   * e escolher outra à mão não ajuda: não dá para saber quem está com o
+   * Coreon aberto.
+   */
+  excluidos?: string[]
 }
 
 /** Progresso de uma solicitação universal (view solicitacoes_universais). */
@@ -143,6 +163,7 @@ function toSolicitacao(r: Row): Solicitacao {
     payload: r.payload ?? null,
     sessao_id: (r.sessao_id as string) ?? null,
     lote: (r.lote as string) ?? null,
+    excluidos: (r.excluidos as string[]) ?? null,
     sap_usuario: (r.sap_usuario as string) ?? null,
     tem_senha: r.tem_senha === true,
     status: (r.status as StatusSolicitacao) ?? 'pendente',
@@ -240,6 +261,7 @@ export class SolicitacoesService {
     if (n.destinatario) linha.destinatario = n.destinatario
     if (n.sapUsuario) linha.sap_usuario = n.sapUsuario
     if (n.sapSenha) linha.sap_senha = n.sapSenha
+    if (n.excluidos?.length) linha.excluidos = normalizarExcluidos(n.excluidos)
 
     await this.svc.salvarLinha(TABELA_ESCRITA, linha, null)
   }
@@ -357,6 +379,7 @@ export class SolicitacoesService {
       if (p.destinatario) l.destinatario = p.destinatario
       if (p.sapUsuario) l.sap_usuario = p.sapUsuario
       if (p.sapSenha) l.sap_senha = p.sapSenha
+      if (p.excluidos?.length) l.excluidos = normalizarExcluidos(p.excluidos)
       return l
     })
 
