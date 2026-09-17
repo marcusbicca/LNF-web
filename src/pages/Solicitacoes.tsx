@@ -15,6 +15,7 @@ import {
 } from '../services/solicitacoes'
 import { TabelasSap } from '../components/TabelasSap'
 import { ColetaPedidos } from '../components/ColetaPedidos'
+import { carregarUsuarios, conferir } from '../services/destinatarios'
 import {
   carregarComSementes,
   salvar as salvarModelos,
@@ -171,6 +172,24 @@ export function Solicitacoes() {
       return ''
     }
   })
+
+  // Os usernames cadastrados, para conferir o destinatário antes de enviar.
+  // Falha de leitura vira lista vazia, e lista vazia não acusa nada: um aviso
+  // que não pôde ser verificado seria pior que aviso nenhum.
+  const [usuariosCadastrados, setUsuariosCadastrados] = useState<string[]>([])
+  useEffect(() => {
+    if (!svc) return
+    let vivo = true
+    carregarUsuarios(svc)
+      .then((u) => { if (vivo) setUsuariosCadastrados(u) })
+      .catch(() => { /* sem lista, sem aviso */ })
+    return () => { vivo = false }
+  }, [svc])
+
+  const confDestinatario = useMemo(
+    () => conferir(destinatario, usuariosCadastrados),
+    [destinatario, usuariosCadastrados],
+  )
 
   const listaExcluidos = useMemo(
     () => excluidos.split(/[,\n;]/).map((x) => x.trim().toLowerCase()).filter(Boolean),
@@ -703,6 +722,32 @@ export function Solicitacoes() {
             placeholder="Abrir na máquina de… (usuário Windows; vazio = a primeira que pegar)"
             className="bg-zinc-900 border border-zinc-700 rounded px-2 py-1 text-sm w-full"
           />
+
+          {!confDestinatario.existe && (
+            <p className="text-xs text-amber-500">
+              Não existe usuário <code>{destinatario.trim().toLowerCase()}</code> no
+              cadastro — nenhuma máquina responde por esse nome, e a solicitação
+              ficaria pendente para sempre.
+              {confDestinatario.sugestoes.length > 0 && (
+                <>
+                  {' '}Quis dizer{' '}
+                  {confDestinatario.sugestoes.map((u, i) => (
+                    <span key={u}>
+                      {i > 0 && ' · '}
+                      <button
+                        type="button"
+                        onClick={() => setDestinatario(u)}
+                        className="underline decoration-dotted hover:text-amber-300"
+                      >
+                        {u}
+                      </button>
+                    </span>
+                  ))}
+                  ?
+                </>
+              )}
+            </p>
+          )}
 
           <input
             value={excluidos}
