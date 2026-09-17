@@ -14,6 +14,7 @@ import {
   type Execucao,
 } from '../services/solicitacoes'
 import { TabelasSap } from '../components/TabelasSap'
+import { ColetaPedidos } from '../components/ColetaPedidos'
 import {
   carregarComSementes,
   salvar as salvarModelos,
@@ -897,6 +898,9 @@ export function Solicitacoes() {
           setTextoJson(texto)
         }}
       />
+
+      {/* ── coleta de pedidos, provisória ─────────────────────────────────── */}
+      <ColetaPedidos />
 
       {/* ── modelos de read_table ─────────────────────────────────────────── */}
       <Modelos
