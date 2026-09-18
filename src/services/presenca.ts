@@ -29,6 +29,19 @@
 // A coluna é protegida por gatilho: só marcar_presenca escreve nela. Presença
 // que se pode digitar não é presença.
 //
+// ── e ela NÃO se semeia ─────────────────────────────────────────────────────
+//
+// Ao criar a coluna, ela foi preenchida com a última ação de cada um, "para
+// nascer útil em vez de vazia". Foi erro: a tela passou a dizer "visto há 6
+// dias (Coreon aberto)" para quem só tinha uma AÇÃO de 6 dias atrás.
+//
+// As duas coisas são exatamente o que esta coluna existe para separar. Copiar
+// uma na outra apaga a única informação nova que ela traz, e troca um campo
+// vazio — que é honesto — por um preenchido e falso.
+//
+// Nulo aqui quer dizer "nunca vi esta máquina falar comigo". A coluna se
+// preenche sozinha conforme cada Coreon liga.
+//
 // ── e por que os usuários SEM histórico aparecem ────────────────────────────
 //
 // São 42 cadastrados e 23 com histórico. Os 19 restantes são a informação mais

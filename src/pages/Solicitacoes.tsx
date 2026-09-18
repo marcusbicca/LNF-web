@@ -9,7 +9,6 @@ import {
   TTL_SESSAO_MIN,
   type Catalogo,
   type Pipe,
-  type Solicitacao,
   type Universal,
   type Execucao,
 } from '../services/solicitacoes'
@@ -41,7 +40,9 @@ import {
 //      'set_xml_path' carregou.
 //
 //   3. PREENCHER E ENVIAR. Os campos vêm do catálogo, com o controle certo por
-//      tipo (checkbox para booleano, área de texto para lista, etc.).
+//      tipo (checkbox para booleano, área de texto para lista, etc.). O envio
+//      NÃO espera a resposta — ver a nota do 'enviar'. Só o passo 1 espera,
+//      porque lá a resposta é a própria sessão.
 //
 // POR QUE O DESTINATÁRIO É FIXADO DO 2º PASSO EM DIANTE: a sessão vive na
 // MEMÓRIA da máquina que atendeu o 1º. Mandar o 2º sem endereço deixaria outra
@@ -64,6 +65,21 @@ interface SessaoAtiva {
    * viva; uma aberta e abandonada há 40 min, não.
    */
   usada: string
+}
+
+/**
+ * Uma solicitação que SAIU desta tela — não uma que voltou.
+ *
+ * Não tem id nem status de propósito: o envio é fogo-e-esquece, então esta tela
+ * não sabe o id (o insert não o devolve) nem acompanha o desfecho. Isto responde
+ * "o que eu acabei de disparar, e para quem", que é o que se perde quando se
+ * manda para três sessões em vinte segundos. O desfecho está em Respostas.
+ */
+interface Enviada {
+  acao: string
+  sessaoId: string
+  executor: string
+  quando: string
 }
 
 /** Minutos desde um carimbo ISO. */
@@ -241,7 +257,9 @@ export function Solicitacoes() {
   const [ocupado, setOcupado] = useState<string | null>(null)
   const [progresso, setProgresso] = useState<string>('')
   const [erro, setErro] = useState<string | null>(null)
-  const [ultima, setUltima] = useState<Solicitacao | null>(null)
+
+  // O que saiu desta tela agora — não o que voltou. Ver a nota do 'enviar'.
+  const [enviadas, setEnviadas] = useState<Enviada[]>([])
 
   const pipe: Pipe | null = useMemo(
     () => catalogo?.pipes.find((p) => p.acao === acao) ?? null,
@@ -602,55 +620,72 @@ export function Solicitacoes() {
   }
 
   // ── 3. enviar ──────────────────────────────────────────────────────────────
+  //
+  // ── por que NÃO se espera a resposta aqui ──────────────────────────────────
+  //
+  // A versão anterior chamava criarEAguardar e só devolvia o controle quando a
+  // solicitação ENCERRAVA — até cinco minutos com a página inteira travada,
+  // porque todo botão desta tela olha o mesmo 'ocupado'.
+  //
+  // Isso torna serial uma coisa que não é: mandar para a segunda máquina
+  // passava a exigir que a primeira terminasse. Mandar para várias sessões é
+  // justamente o caso de uso desta tela, e era o único que ela não atendia.
+  //
+  // E o preço era pago por quem nem queria a resposta na hora. Ela fica gravada
+  // na linha de qualquer jeito; a aba Respostas é onde se lê de verdade, com o
+  // resultado inteiro em vez do resumo de três campos que cabia aqui.
+  //
+  // O caso que motivou: um 'coletar_pedidos' de período grande roda por dezenas
+  // de minutos. Esperar por ele é travar a tela a tarde toda por um resultado
+  // que nem caberia neste painel.
+  //
+  // ── o que se perdeu, e para onde foi ──────────────────────────────────────
+  //
+  //   • o painel de resultado virou a lista 'enviadas' logo abaixo: ela diz o
+  //     que saiu e para onde, que é o que fica difícil de lembrar quando se
+  //     dispara para três sessões seguidas;
+  //
+  //   • a detecção de SESSAO_EXPIRADA no retorno some daqui, mas não some: o
+  //     carregarSessoes() abaixo já a faz, porque sessoesRecentes() marca como
+  //     morta a sessão cuja linha mais recente voltou com esse erro. Chega no
+  //     próximo recarregamento em vez de na hora.
+  //
+  // Esperar continua possível onde faz sentido: abrir sessão ainda espera — lá
+  // a resposta É a sessão, sem ela não há o que endereçar — e o aguardarNaSessao
+  // segue no serviço, retomável por (sessaoId, acao, idAntes).
   async function enviar() {
     if (!sol || !prontoParaEnviar || !acaoEfetiva || !sessao) return
     setErro(null)
     setOcupado('enviar')
-    setProgresso('Criando solicitação…')
 
     try {
-      const payload = payloadAtual()
+      await sol.criar({
+        acao: acaoEfetiva,
+        payload: payloadAtual(),
+        sessaoId: sessao.id,
+        // Endereçada: a sessão está na memória DESTA máquina.
+        destinatario: sessao.executor || undefined,
+      })
 
-      const t0 = Date.now()
-      const pronta = await sol.criarEAguardar(
-        {
-          acao: acaoEfetiva,
-          payload,
-          sessaoId: sessao.id,
-          // Endereçada: a sessão está na memória DESTA máquina.
-          destinatario: sessao.executor || undefined,
-        },
-        {
-          onTick: (s) => {
-            const seg = Math.round((Date.now() - t0) / 1000)
-            setProgresso(
-              !s
-                ? `Solicitação enviada, aguardando aparecer… (${seg}s)`
-                : s.status === 'pendente'
-                  ? `Na fila de ${sessao.executor}… (${seg}s)`
-                  : `Executando… (${seg}s)`,
-            )
+      // Teto de 12: isto é um lembrete do que acabou de sair, não um histórico.
+      // O histórico é a tabela, e ele está na aba Respostas.
+      setEnviadas((e) =>
+        [
+          {
+            acao: acaoEfetiva,
+            sessaoId: sessao.id,
+            executor: sessao.executor,
+            quando: new Date().toISOString(),
           },
-        },
+          ...e,
+        ].slice(0, 12),
       )
 
-      setUltima(pronta)
       marcarUso()
       setProgresso('')
       void carregarSessoes()
-
-      // A sessão sumiu do lado de lá enquanto esta tela ainda a exibia
-      // (Coreon reiniciado, teto de sessões). O Coreon disse com todas as
-      // letras; guardar isso para nós seria repetir o problema que esta
-      // mudança veio resolver.
-      if (/SESSAO_EXPIRADA/i.test(pronta.erro ?? '')) {
-        setSessao(null)
-        localStorage.removeItem(SESS_KEY)
-        void carregarSessoes()
-      }
     } catch (e) {
       setErro((e as Error).message)
-      setProgresso('')
     } finally {
       setOcupado(null)
     }
@@ -865,7 +900,6 @@ export function Solicitacoes() {
                 setAcao(e.target.value)
                 setValores({})
                 setMarcados({})
-                setUltima(null)
               }}
               className="w-full bg-zinc-900 border border-zinc-700 rounded px-2 py-1.5 text-sm"
             >
@@ -1125,26 +1159,39 @@ export function Solicitacoes() {
           {erro}
         </div>
       )}
-      {ultima && (
-        <div className="text-sm border border-zinc-800 rounded p-3 space-y-1">
-          <div>
-            <span className="text-zinc-500">#{ultima.id}</span>{' '}
-            <span className={ultima.status === 'concluida' ? 'text-green-400' : 'text-red-400'}>
-              {ultima.status}
-            </span>{' '}
-            <span className="text-zinc-500">
-              por {ultima.executor} em{' '}
-              {ultima.terminado_em && ultima.iniciado_em
-                ? Math.round(
-                    (new Date(ultima.terminado_em).getTime() -
-                      new Date(ultima.iniciado_em).getTime()) / 1000,
-                  ) + 's'
-                : '—'}
+      {enviadas.length > 0 && (
+        <div className="text-sm border border-zinc-800 rounded p-3 space-y-2">
+          <div className="flex items-center justify-between">
+            <span className="text-zinc-400">
+              Enviadas agora ({enviadas.length})
             </span>
+            <button
+              onClick={() => setEnviadas([])}
+              className="text-xs text-zinc-500 hover:text-zinc-300"
+            >
+              limpar
+            </button>
           </div>
-          {ultima.erro && <div className="text-red-400">{ultima.erro}</div>}
+
+          <ul className="space-y-1">
+            {enviadas.map((e, i) => (
+              <li
+                key={`${e.quando}-${i}`}
+                className="flex flex-wrap items-baseline gap-x-2 text-xs"
+              >
+                <span className="text-green-400 font-mono">{e.acao}</span>
+                <span className="text-zinc-500">→ {e.executor || 'qualquer um'}</span>
+                <span className="text-zinc-600 font-mono">{e.sessaoId}</span>
+                <span className="text-zinc-600 ml-auto">{haQuanto(e.quando, agora)}</span>
+              </li>
+            ))}
+          </ul>
+
+          {/* Isto é o que SAIU. O que voltou não está aqui, e não por
+              esquecimento: esta tela não espera mais resposta nenhuma. */}
           <div className="text-xs text-zinc-500">
-            Veja a resposta completa na aba <b>Respostas</b>.
+            Nenhuma delas é esperada aqui — o resultado de cada uma aparece na
+            aba <b>Respostas</b> quando a máquina terminar.
           </div>
         </div>
       )}
