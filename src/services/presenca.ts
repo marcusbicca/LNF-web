@@ -1,27 +1,33 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // Presença e atividade — quem está usando a ferramenta, e quanto
 //
-// ── por que NADA disto é gravado ────────────────────────────────────────────
-//
-// A ideia inicial era carimbar 'visto_em' e 'ultima_acao' na tabela usuarios,
-// a cada chamada, pela Edge Function. Seria uma escrita por leitura do parque
-// inteiro — e, pior, poria em usuarios um dado que ninguém deve poder editar
-// por lá. Presença não se declara; se observa.
+// ── quase tudo é CALCULADO, e uma coisa só é gravada ────────────────────────
 //
 // O historico já é o registro, e é imutável por natureza: 8 mil linhas, 23
-// usuários, 17 ações, desde julho. Tudo que este relatório mostra é uma conta
-// sobre ele. Zero escrita, zero coluna nova, zero risco de alguém "corrigir" a
-// própria presença.
+// usuários, 17 ações, desde julho. Contagens, faixas, ações por pessoa — tudo
+// é conta sobre ele, feita na hora. Nada disso vira coluna, porque duas fontes
+// para o mesmo número é a garantia de que um dia elas vão discordar e ninguém
+// vai saber qual acreditar.
 //
-// ── o que este número NÃO é ─────────────────────────────────────────────────
+// A exceção é a presença, e ela existe porque é o único dado que o historico
+// NÃO tem como ter. Ver abaixo.
 //
-// 'visto em' aqui é a última AÇÃO, não o último acesso. Quem abre o Coreon,
-// deixa sincronizando e não executa nada não aparece — para o historico, ele
-// não fez nada, porque de fato não fez.
+// ── os DOIS relógios, e por que são dois ────────────────────────────────────
 //
-// A diferença importa em um caso só: máquina ligada e ociosa. Para "quem está
-// usando a ferramenta", que é a pergunta de verdade, a ação é a medida certa —
-// e é a única que não custa uma escrita por poll.
+// 'última ação' vem do historico: o que a pessoa EXECUTOU. É a medida do
+// trabalho, e é imutável.
+//
+// 'presença' vem de usuarios.visto_em, carimbado pela Edge Function a cada
+// chamada validada. Ela enxerga o que o historico não tem como enxergar: a
+// máquina ligada, sincronizando, sem executar nada. Para o historico essa
+// pessoa não existe — mas ela está lá, e isso é diferente de quem fechou o
+// Excel semana passada.
+//
+// Custa pouco porque a Edge Function já valida o usuário em toda chamada, e a
+// função do banco só grava se o último carimbo tem mais de um minuto.
+//
+// A coluna é protegida por gatilho: só marcar_presenca escreve nela. Presença
+// que se pode digitar não é presença.
 //
 // ── e por que os usuários SEM histórico aparecem ────────────────────────────
 //
@@ -37,7 +43,15 @@ export interface AtividadeUsuario {
   username: string
   nome: string
   nivelAdm: number
-  /** Última ação registrada. null = nunca usou. */
+  /**
+   * Última vez que a Edge Function VIU o usuário — inclui a máquina ligada e
+   * sincronizando sem executar nada. Vem de usuarios.visto_em, carimbado pela
+   * marcar_presenca, e é o único dado desta tela que o historico não tem.
+   *
+   * null = nunca foi visto nem executou nada.
+   */
+  presencaEm: string | null
+  /** Última ação registrada no historico. null = nunca executou. */
   vistoEm: string | null
   ultimaAcao: string | null
   primeiraEm: string | null
@@ -129,16 +143,22 @@ export async function carregarAtividade(svc: SupabaseService): Promise<Atividade
 
   // ── os cadastrados entram TODOS, inclusive os de zero ─────────────────────
   const cadastrados = await svc.lerLinhas('usuarios', {
-    select: 'username,nome,nivel_adm',
+    select: 'username,nome,nivel_adm,visto_em',
     order: 'username.asc',
   })
 
   const porUsuario = new Map<string, AtividadeUsuario>()
 
-  const criar = (username: string, nome = '', nivelAdm = 0): AtividadeUsuario => ({
+  const criar = (
+    username: string,
+    nome = '',
+    nivelAdm = 0,
+    presencaEm: string | null = null,
+  ): AtividadeUsuario => ({
     username,
     nome,
     nivelAdm,
+    presencaEm,
     vistoEm: null,
     ultimaAcao: null,
     primeiraEm: null,
@@ -152,7 +172,11 @@ export async function carregarAtividade(svc: SupabaseService): Promise<Atividade
   for (const r of cadastrados) {
     const u = String(r.username ?? '').trim().toLowerCase()
     if (!u) continue
-    porUsuario.set(u, criar(u, String(r.nome ?? ''), Number(r.nivel_adm ?? 0)))
+    porUsuario.set(
+      u,
+      criar(u, String(r.nome ?? ''), Number(r.nivel_adm ?? 0),
+            r.visto_em ? String(r.visto_em) : null),
+    )
   }
 
   const contagens = new Map<string, Map<string, number>>()
@@ -199,10 +223,18 @@ export async function carregarAtividade(svc: SupabaseService): Promise<Atividade
   // Mais recente primeiro; quem nunca usou vai para o fim, em ordem de nome.
   // É a ordem que responde "quem está ativo" na primeira tela, e deixa os
   // inativos agrupados no fim, que é onde eles são úteis.
+  // Ordena pelo sinal mais RECENTE dos dois: presença e última ação medem
+  // coisas diferentes, e quem está com o Coreon aberto agora deve vir antes de
+  // quem executou algo ontem, mesmo sem ter executado nada hoje.
+  const recente = (u: AtividadeUsuario) =>
+    [u.presencaEm, u.vistoEm].filter(Boolean).sort().pop() ?? ''
+
   const usuarios = [...porUsuario.values()].sort((a, b) => {
-    if (a.vistoEm && b.vistoEm) return a.vistoEm < b.vistoEm ? 1 : -1
-    if (a.vistoEm) return -1
-    if (b.vistoEm) return 1
+    const ra = recente(a)
+    const rb = recente(b)
+    if (ra && rb) return ra < rb ? 1 : -1
+    if (ra) return -1
+    if (rb) return 1
     return a.username.localeCompare(b.username)
   })
 

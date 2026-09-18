@@ -6,9 +6,17 @@ import { carregarAtividade, desde, type Atividade, type AtividadeUsuario } from 
 // ─────────────────────────────────────────────────────────────────────────────
 // Presença — quem usa a ferramenta, quanto, e quem nunca usou
 //
-// Tudo sai do historico, calculado na hora. Nada é gravado: presença que se
-// declara é presença que se edita, e o que interessa aqui é o que de fato
-// aconteceu. Ver o cabeçalho de services/presenca.ts.
+// Dois relógios, e eles medem coisas diferentes:
+//
+//   PRESENÇA      usuarios.visto_em, carimbado pela Edge Function em toda
+//                 chamada validada. Enxerga a máquina ligada e sincronizando
+//                 sem executar nada — o que o historico não tem como ver.
+//
+//   ÚLTIMA AÇÃO   historico. O que a pessoa de fato EXECUTOU.
+//
+// Alguém pode estar presente hoje e sem ação nenhuma há uma semana: está com o
+// Coreon aberto e não usou. Juntar os dois num número só apagaria exatamente
+// essa distinção. Ver o cabeçalho de services/presenca.ts.
 //
 // ── a tela responde três perguntas, nesta ordem ──────────────────────────────
 //
@@ -30,16 +38,26 @@ import { carregarAtividade, desde, type Atividade, type AtividadeUsuario } from 
 // prática: "esta pessoa ainda usa isto?" — e um mês sem nenhuma ação num
 // trabalho diário responde que não.
 function faixa(a: AtividadeUsuario): { rotulo: string; cor: string } {
-  if (!a.vistoEm) return { rotulo: 'nunca usou', cor: 'text-zinc-600' }
-  if (a.em7 > 0)  return { rotulo: 'ativo',      cor: 'text-green-400' }
-  if (a.em30 > 0) return { rotulo: 'no mês',     cor: 'text-amber-500' }
+  if (a.em7 > 0)  return { rotulo: 'ativo',  cor: 'text-green-400' }
+  if (a.em30 > 0) return { rotulo: 'no mês', cor: 'text-amber-500' }
+
+  // Presente sem ação é um estado PRÓPRIO, e o mais interessante da tela: a
+  // pessoa abre o Coreon todo dia e não usa. Chamar isso de 'inativo' junto de
+  // quem nem liga a máquina esconderia a diferença entre "não precisa" e "não
+  // consegue" — e só a segunda pede alguém ir conversar.
+  const pres = a.presencaEm ? Date.parse(a.presencaEm) : NaN
+  if (!Number.isNaN(pres) && pres >= Date.now() - 7 * 864e5)
+    return { rotulo: 'aberto, sem uso', cor: 'text-blue-400' }
+
+  if (!a.vistoEm && !a.presencaEm) return { rotulo: 'nunca usou', cor: 'text-zinc-600' }
   return { rotulo: 'inativo', cor: 'text-red-400' }
 }
 
 function csv(at: Atividade): string {
   const linhas = [
-    ['usuario', 'nome', 'nivel', 'situacao', 'ultima_acao_em', 'ultima_acao',
-     'total', 'em_7d', 'em_30d', 'falhas', 'primeira_acao_em', 'por_acao'].join(';'),
+    ['usuario', 'nome', 'nivel', 'situacao', 'presenca_em', 'ultima_acao_em',
+     'ultima_acao', 'total', 'em_7d', 'em_30d', 'falhas', 'primeira_acao_em',
+     'por_acao'].join(';'),
   ]
 
   for (const u of at.usuarios) {
@@ -48,6 +66,7 @@ function csv(at: Atividade): string {
       u.nome,
       String(u.nivelAdm),
       faixa(u).rotulo,
+      u.presencaEm ?? '',
       u.vistoEm ?? '',
       u.ultimaAcao ?? '',
       String(u.total),
@@ -98,14 +117,16 @@ export function Presenca() {
 
   const resumo = useMemo(() => {
     if (!at) return null
-    let ativos = 0, mes = 0, inativos = 0, nunca = 0
+    let ativos = 0, mes = 0, semUso = 0, inativos = 0, nunca = 0
     for (const u of at.usuarios) {
-      if (!u.vistoEm) nunca++
-      else if (u.em7 > 0) ativos++
-      else if (u.em30 > 0) mes++
+      const r = faixa(u).rotulo
+      if (r === 'ativo') ativos++
+      else if (r === 'no mês') mes++
+      else if (r === 'aberto, sem uso') semUso++
+      else if (r === 'nunca usou') nunca++
       else inativos++
     }
-    return { ativos, mes, inativos, nunca, total: at.usuarios.length }
+    return { ativos, mes, semUso, inativos, nunca, total: at.usuarios.length }
   }, [at])
 
   const baixarCsv = () => {
@@ -155,8 +176,9 @@ export function Presenca() {
 
       {!at && !carregando && !erro && (
         <p className="text-sm text-zinc-500">
-          Calculado a partir do histórico, na hora. Nada é gravado — o que aparece
-          aqui é o que de fato foi executado.
+          As contagens saem do histórico, calculadas na hora. A presença vem do
+          carimbo que a Edge Function faz a cada chamada — é o que mostra quem
+          está com o Coreon aberto sem executar nada.
         </p>
       )}
 
@@ -165,6 +187,7 @@ export function Presenca() {
           <div className="flex flex-wrap gap-3 text-sm">
             <span className="text-green-400">{resumo.ativos} ativo(s) em 7d</span>
             <span className="text-amber-500">{resumo.mes} só no mês</span>
+            <span className="text-blue-400">{resumo.semUso} aberto(s) sem uso</span>
             <span className="text-red-400">{resumo.inativos} parado(s) há +30d</span>
             <span className="text-zinc-600">{resumo.nunca} nunca usou</span>
             <span className="text-zinc-500 ml-auto font-mono text-xs">
@@ -216,7 +239,10 @@ export function Presenca() {
                     )}
 
                     <span className={`ml-auto text-xs ${f.cor}`}>{f.rotulo}</span>
-                    <span className="text-xs text-zinc-500 w-20 text-right">
+                    <span
+                      className="text-xs text-zinc-500 w-20 text-right"
+                      title="última ação executada"
+                    >
                       {desde(u.vistoEm) ?? '—'}
                     </span>
                     <span className="text-xs text-zinc-400 w-16 text-right font-mono">
@@ -253,12 +279,19 @@ export function Presenca() {
 
                           <div className="text-xs text-zinc-500">
                             7 dias: {u.em7} · 30 dias: {u.em30}
+                            {u.presencaEm && (
+                              <> · visto {desde(u.presencaEm)} (Coreon aberto)</>
+                            )}
                           </div>
                         </>
                       ) : (
                         <p className="text-xs text-zinc-500">
                           Cadastrado, sem nenhuma ação registrada desde que o
                           histórico existe.
+                          {u.presencaEm && (
+                            <> Mas o Coreon dele foi visto {desde(u.presencaEm)} —
+                            está abrindo a ferramenta e não executando nada.</>
+                          )}
                         </p>
                       )}
                     </div>
