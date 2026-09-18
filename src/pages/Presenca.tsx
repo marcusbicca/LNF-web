@@ -280,7 +280,7 @@ export function Presenca() {
                           <div className="text-xs text-zinc-500">
                             7 dias: {u.em7} · 30 dias: {u.em30}
                             {u.presencaEm && (
-                              <> · visto {desde(u.presencaEm)} (Coreon aberto)</>
+                              <> · Coreon visto {desde(u.presencaEm)}</>
                             )}
                           </div>
                         </>
