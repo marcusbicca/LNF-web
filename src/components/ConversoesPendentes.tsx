@@ -74,6 +74,44 @@ import {
 // respondem perguntas diferentes; trocá-las grava a conversão invertida.
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ── um campo em caixa, como no Mapeamento ────────────────────────────────────
+//
+// A tela era texto corrido: "razão das quantidades: 12" numa grade de spans.
+// Lê-se como parágrafo, e o que se procura aqui é NÚMERO — quem abre esta fila
+// quer comparar 12 com 0,0833, não ler uma frase.
+//
+// Caixa com rótulo em cima resolve pelo alinhamento: os valores ficam na mesma
+// coluna, na mesma fonte, e a diferença salta. É o formato do Mapeamento, e é
+// por isso que aquela tela é mais fácil de usar que esta.
+//
+// readOnly e não disabled: disabled apaga o texto e impede selecionar. Aqui
+// copiar o número é metade do trabalho de quem confere.
+function Campo({
+  rotulo,
+  valor,
+  largura = 'w-28',
+  cor = 'text-zinc-300',
+  titulo,
+}: {
+  rotulo: string
+  valor: string
+  largura?: string
+  cor?: string
+  titulo?: string
+}) {
+  return (
+    <div title={titulo}>
+      <label className="block text-[11px] text-zinc-500 mb-0.5">{rotulo}</label>
+      <input
+        type="text"
+        value={valor}
+        readOnly
+        className={`${largura} bg-zinc-950 border border-zinc-700 rounded px-2 py-1 text-sm font-mono ${cor}`}
+      />
+    </div>
+  )
+}
+
 type Row = Record<string, unknown>
 
 function dbl(r: Row, k: string): number {
@@ -380,6 +418,17 @@ export function ConversoesPendentes() {
   // parecer a outra.
   const [umbMigo, setUmbMigo] = useState('')
 
+  // ── a calculadora de inverso ──────────────────────────────────────────────
+  //
+  // Não grava nada e não participa de conta nenhuma. Existe porque metade do
+  // trabalho desta tela é olhar para 0,0833 e perguntar "isso é 1/12?" — e
+  // fazer essa conta de cabeça, doze vezes por fila, é onde o erro entra.
+  //
+  // Fora do 'sel' de propósito: o valor sobrevive à troca de caso, porque quem
+  // está comparando dois casos não quer redigitar o número ao mudar de um para
+  // o outro.
+  const [inverso, setInverso] = useState('')
+
   const chave = (c: Caso) => `${c.fornecedor}\u0000${c.codigo}\u0000${c.referencia}\u0000${c.tipo}`
   const sel = useMemo(() => casos.find(c => chave(c) === selId) ?? null, [casos, selId])
 
@@ -667,7 +716,27 @@ export function ConversoesPendentes() {
   // diagnóstico (saldo ÷ NF, para comparar com a razão dos valores); este é o
   // fator do CADASTRO (NF ÷ saldo, com de/para orientados). Foi confundir os
   // dois que fez a primeira versão desta tela sugerir o sentido invertido.
-  function sugerir(i: number) {
+  // ── por QUANTIDADE ou por PREÇO ───────────────────────────────────────────
+  //
+  // As duas respondem a mesma pergunta por caminhos independentes, e é por isso
+  // que ter as duas vale: quando elas dão o MESMO fator, a conversão está
+  // provada por duas contas que não se falam. Quando divergem, o caso não é
+  // conversão — e descobrir isso com um clique é melhor que descobrir depois de
+  // gravar.
+  //
+  // ── por que o preço entra ao contrário ────────────────────────────────────
+  //
+  // O sugerirConv espera um par cuja divisão seja NF ÷ saldo. Em quantidade
+  // isso é (qtdNf, qtdSaldo): uma caixa contra doze unidades dá 1/12.
+  //
+  // Em preço a razão é INVERTIDA pelo próprio fato de o preço ser por unidade:
+  // a caixa custa doze vezes a unidade. Então o par equivalente é
+  // (valorPedido, valorNf) — o preço unitário do pedido contra o da nota —, que
+  // dá o mesmo 1/12.
+  //
+  // Passar (valorNf, valorPedido) daria o inverso e gravaria a conversão ao
+  // contrário, que é exatamente o defeito que esta fila existe para consertar.
+  function sugerir(i: number, base: 'quantidade' | 'preco') {
     if (!sel) return
     const alvo = convs[i]
     if (!alvo) return
@@ -676,7 +745,12 @@ export function ConversoesPendentes() {
     // universal que não deveria existir era gravar o erro com um clique —
     // e era o clique mais natural da tela.
     const seguro = universalEhSeguro(sel.umbNf, sel.umbPedido)
-    const s = sugerirConv(sel.qtdNf, sel.qtdSaldo, sel.umbNf, sel.umbPedido, seguro)
+
+    const s =
+      base === 'quantidade'
+        ? sugerirConv(sel.qtdNf, sel.qtdSaldo, sel.umbNf, sel.umbPedido, seguro)
+        : sugerirConv(sel.valorPedido, sel.valorNf, sel.umbNf, sel.umbPedido, seguro)
+
     if (!s) return
 
     mexer(i, {
@@ -1219,51 +1293,146 @@ export function ConversoesPendentes() {
                 ))}
               </div>
 
-              {/* ── o que aconteceu naquela NF ─────────────────────────── */}
-              {aba === 'unidade' ? (
-                <div className="text-xs space-y-1">
-                  <div className="font-semibold text-zinc-300">Naquela NF</div>
-                  <div className="grid grid-cols-2 gap-x-4 gap-y-1 font-mono text-zinc-400">
-                    <span>NF {sel.nf || '—'}</span>
-                    <span>pedido {sel.pedido || '—'}</span>
-                    <span className="col-span-2 text-amber-400">
-                      quantidade: {num(sel.qtdConvertida)} {sel.umbPedido || sel.umbNf}
-                    </span>
-                    <span className="col-span-2">
-                      UmbMigo na época: {sel.umbMigoNaEpoca || '(nenhuma)'}
-                    </span>
-                    <span className="col-span-2">
-                      conversão valendo na época: {sel.conversaoNaEpoca || '(nenhuma)'}
-                    </span>
-                    {sel.erroSap && (
-                      <span className="col-span-2 text-red-400">SAP: {sel.erroSap}</span>
-                    )}
-                  </div>
-                  <p className="text-zinc-500">
-                    {sel.motivo === 'erro_sap'
-                      ? 'O SAP recusou o lançamento por unidade de medida — não há o que deduzir, ele disse.'
-                      : 'Depois da conversão a quantidade ficou quebrada. Meia caixa não existe no estoque: se a conta deu isso, a unidade de lançamento é que está errada.'}
-                  </p>
+              {/* ── o que aconteceu naquela NF ───────────────────────────
+                  UM bloco para os dois tipos, e isso é o conserto.
+
+                  Antes eram dois blocos diferentes: o de 'conversao' mostrava
+                  as duas razões, o de 'umb_migo' mostrava a quantidade já
+                  convertida. NENHUM dos dois mostrava os números crus —
+                  quantidade da NF, saldo do pedido, os dois valores unitários —
+                  que já chegavam no payload e ficavam sem ser lidos.
+
+                  Faltando eles, a tela pedia para confiar num fator sem mostrar
+                  de onde ele saiu. E no umb_migo era pior: sem o lado cru não
+                  dava para sequer conferir se a conversão fazia sentido, que é
+                  a pergunta que o caso levanta. */}
+              <div className="space-y-2">
+                <div className="text-xs font-semibold text-zinc-300">
+                  Naquela NF
+                  <span className="ml-2 font-normal text-zinc-600">
+                    NF {sel.nf || '—'} · pedido {sel.pedido || '—'}
+                    {sel.vezes > 1 && ` · ${sel.vezes}x`}
+                  </span>
                 </div>
-              ) : (
-                <div className="text-xs space-y-1">
-                  <div className="font-semibold text-zinc-300">Naquela NF</div>
-                  <div className="grid grid-cols-2 gap-x-4 gap-y-1 font-mono text-zinc-400">
-                    <span>NF {sel.nf || '—'}</span>
-                    <span>pedido {sel.pedido || '—'}</span>
-                    <span>razão das quantidades: {num(sel.fatorQtd ?? NaN)}</span>
-                    <span>razão dos valores: {num(sel.fatorValor ?? NaN)}</span>
-                    <span className="col-span-2">
-                      conversão valendo na época: {sel.conversaoNaEpoca || '(nenhuma)'}
-                    </span>
-                  </div>
-                  <p className="text-zinc-500">
-                    {concordam(sel)
+
+                {/* Os CRUS, lado a lado: é a comparação que responde tudo. */}
+                <div className="flex flex-wrap gap-2">
+                  <Campo
+                    rotulo={`qtd NF${sel.umbNf ? ` (${sel.umbNf})` : ''}`}
+                    valor={num(sel.qtdNf)}
+                    titulo="A quantidade como veio na nota, antes de qualquer conversão."
+                  />
+                  <Campo
+                    rotulo={`saldo pedido${sel.umbPedido ? ` (${sel.umbPedido})` : ''}`}
+                    valor={num(sel.qtdSaldo)}
+                    titulo="O saldo do item no pedido, na unidade do pedido."
+                  />
+                  <Campo
+                    rotulo="valor un. NF"
+                    valor={num(sel.valorNf)}
+                    titulo="Preço unitário na nota — na unidade da nota."
+                  />
+                  <Campo
+                    rotulo="valor un. pedido"
+                    valor={num(sel.valorPedido)}
+                    titulo="Preço unitário no pedido — na unidade do pedido."
+                  />
+                </div>
+
+                {/* Os DERIVADOS, separados dos crus de propósito: um é fato da
+                    nota, o outro é conta nossa, e misturá-los foi o que fez
+                    alguém já gravar a razão de diagnóstico como fator. */}
+                <div className="flex flex-wrap gap-2">
+                  <Campo
+                    rotulo="razão qtd"
+                    valor={sel.fatorQtd == null ? '—' : num(sel.fatorQtd)}
+                    cor={concordam(sel) ? 'text-green-400' : 'text-amber-400'}
+                    titulo="saldo ÷ qtd da NF. Diagnóstico, NÃO é o fator que se grava."
+                  />
+                  <Campo
+                    rotulo="razão preço"
+                    valor={sel.fatorValor == null ? '—' : num(sel.fatorValor)}
+                    cor={concordam(sel) ? 'text-green-400' : 'text-amber-400'}
+                    titulo="valor da NF ÷ valor do pedido. Diagnóstico, NÃO é o fator que se grava."
+                  />
+                  <Campo
+                    rotulo="conversão na época"
+                    valor={sel.conversaoNaEpoca || '(nenhuma)'}
+                    largura="w-44"
+                    titulo="O que estava cadastrado no instante do lançamento."
+                  />
+                  {sel.ehUmbMigo && (
+                    <>
+                      <Campo
+                        rotulo="qtd convertida"
+                        valor={num(sel.qtdConvertida)}
+                        cor="text-amber-400"
+                        titulo="O que sairia para o MIGO depois da conversão — foi este número quebrado que abriu o caso."
+                      />
+                      <Campo
+                        rotulo="UmbMigo na época"
+                        valor={sel.umbMigoNaEpoca || '(nenhuma)'}
+                        titulo="A unidade de lançamento que estava cadastrada."
+                      />
+                    </>
+                  )}
+                </div>
+
+                {sel.erroSap && (
+                  <p className="text-xs text-red-400">SAP: {sel.erroSap}</p>
+                )}
+
+                <p className="text-xs text-zinc-500">
+                  {sel.ehUmbMigo
+                    ? sel.motivo === 'erro_sap'
+                      ? 'O SAP recusou o lançamento por unidade de medida — não há o que deduzir, ele disse.'
+                      : 'Depois da conversão a quantidade ficou quebrada. Meia caixa não existe no estoque: se a conta deu isso, a unidade de lançamento é que está errada.'
+                    : concordam(sel)
                       ? 'As duas razões dão o mesmo número — é a mesma caixa contada de dois jeitos, o que aponta para conversão.'
                       : 'As razões NÃO batem. Provavelmente não é conversão: veja preço, ou entrega parcial junto de reajuste.'}
-                  </p>
+                </p>
+              </div>
+
+              {/* ── calculadora de inverso ────────────────────────────────
+                  Colada nos números da nota porque é sobre eles que se usa. */}
+              <div className="flex flex-wrap items-end gap-2">
+                <div>
+                  <label className="block text-[11px] text-zinc-500 mb-0.5">1 ÷ n</label>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={inverso}
+                    onChange={e => setInverso(e.target.value)}
+                    placeholder="digite um número"
+                    className="w-36 bg-zinc-800 border border-zinc-600 rounded px-2 py-1 text-sm font-mono focus:outline-none focus:border-green-500"
+                  />
                 </div>
-              )}
+                <div className="flex-1 min-w-[8rem]">
+                  <label className="block text-[11px] text-zinc-500 mb-0.5">resultado</label>
+                  <input
+                    type="text"
+                    readOnly
+                    value={(() => {
+                      // Vírgula aceita: o número vem da tela, e na tela ele está
+                      // escrito em português.
+                      const n = Number((inverso ?? '').trim().replace(',', '.'))
+                      if (!inverso.trim()) return ''
+                      if (!Number.isFinite(n)) return 'não é número'
+                      if (n === 0) return 'divisão por zero'
+                      return num(1 / n)
+                    })()}
+                    className="w-full bg-zinc-950 border border-zinc-700 rounded px-2 py-1 text-sm font-mono text-green-400"
+                  />
+                </div>
+                {inverso.trim() && (
+                  <button
+                    onClick={() => setInverso('')}
+                    className="px-2 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-xs text-zinc-400"
+                  >
+                    limpar
+                  </button>
+                )}
+              </div>
 
               {/* ── o que o SAP tem para o material ────────────────────── */}
               {aba === 'unidade' && (
@@ -1488,16 +1657,28 @@ export function ConversoesPendentes() {
                         <span className="flex-1" />
 
                         <button
-                          onClick={() => sugerir(i)}
+                          onClick={() => sugerir(i, 'quantidade')}
                           disabled={semLadoCru(sel)}
                           className="px-2 py-1 rounded bg-zinc-800 hover:bg-zinc-700 disabled:opacity-40 disabled:cursor-not-allowed"
                           title={
                             semLadoCru(sel)
                               ? 'Esta linha não trouxe o lado cru da NF: ela guarda a quantidade JÁ CONVERTIDA, não a da nota. Sugerir daqui daria um fator sobre um número convertido — e universal, porque as duas unidades chegaram iguais. Use os números da nota.'
-                              : 'Preenche fator e unidades pela NF e pelo saldo — mesma regra do botão Sugerir do mapeamento.'
+                              : 'Preenche fator e unidades pela quantidade da NF contra o saldo do pedido — mesma regra do Sugerir do mapeamento.'
                           }
                         >
-                          Sugerir
+                          Sugerir p/ qtd
+                        </button>
+                        <button
+                          onClick={() => sugerir(i, 'preco')}
+                          disabled={sel.valorNf === 0 || sel.valorPedido === 0}
+                          className="px-2 py-1 rounded bg-zinc-800 hover:bg-zinc-700 disabled:opacity-40 disabled:cursor-not-allowed"
+                          title={
+                            sel.valorNf === 0 || sel.valorPedido === 0
+                              ? 'Sem os dois valores unitários não há razão de preço para calcular.'
+                              : 'Mesmo fator, por um caminho independente: o preço unitário do pedido contra o da nota. Batendo com o de quantidade, a conversão está provada por duas contas que não se falam.'
+                          }
+                        >
+                          Sugerir p/ preço
                         </button>
                         {!c.umbsIguais && (
                           <button
