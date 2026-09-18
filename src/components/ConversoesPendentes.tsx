@@ -213,6 +213,40 @@ interface Caso {
   // aqui não é erro: é uma linha que não dá para julgar por este caminho.
   fatorQtd: number | null
   fatorValor: number | null
+
+  // ── as OUTRAS linhas do mesmo material naquele Executar ──────────────────
+  //
+  // Vazio para toda suspeita gravada antes do Coreon que passou a mandá-las.
+  // Ausência aqui é "não sei", nunca "não havia" — por isso a tela não escreve
+  // "nenhuma outra linha" quando a lista vem vazia.
+  linhasItem: LinhaItem[]
+}
+
+/** Uma linha de pedido do mesmo material, como estava ANTES do processamento. */
+export interface LinhaItem {
+  pedido: string
+  item: string
+  saldo: number
+  umb: string
+  valorUn: number
+  centro: string
+  entrega: string
+}
+
+function lerLinhasItem(v: unknown): LinhaItem[] {
+  if (!Array.isArray(v)) return []
+  return v.map(o => {
+    const r = (o ?? {}) as Row
+    return {
+      pedido: txt(r, 'pedido'),
+      item: txt(r, 'item'),
+      saldo: dbl(r, 'saldo'),
+      umb: txt(r, 'umb'),
+      valorUn: dbl(r, 'valorUn'),
+      centro: txt(r, 'centro'),
+      entrega: txt(r, 'entrega'),
+    }
+  })
 }
 
 function montar(r: Row): Caso {
@@ -247,6 +281,7 @@ function montar(r: Row): Caso {
     usuario: txt(r, 'usuario'),
     fatorQtd: qtdNf !== 0 ? qtdSaldo / qtdNf : null,
     fatorValor: valorPedido !== 0 ? valorNf / valorPedido : null,
+    linhasItem: lerLinhasItem(r['linhas_item']),
   }
 }
 
@@ -408,6 +443,13 @@ export function ConversoesPendentes() {
   // pergunta que se faz aqui não é só "o que aconteceu naquela nota", é "e se
   // fosse outra quantidade, este cadastro aguenta?".
   const [simQtd, setSimQtd] = useState('')
+
+  // Quais linhas irmãs entram na soma. Set de "pedido|item".
+  //
+  // Começa VAZIO de propósito: o caso tem que abrir mostrando o que de fato
+  // aconteceu. Somar por conta própria seria decidir pela pessoa qual foi a
+  // intenção do fornecedor — que é exatamente o que ninguém sabe.
+  const [somadas, setSomadas] = useState<Set<string>>(new Set())
   const [simValorNf, setSimValorNf] = useState('')
   const [simValorPed, setSimValorPed] = useState('')
   const [simUmbNf, setSimUmbNf] = useState('')
@@ -588,6 +630,7 @@ export function ConversoesPendentes() {
     semeadoSim.current = selId
 
     setSimQtd(String(sel.qtdNf))
+    setSomadas(new Set())
     setSimValorNf(String(sel.valorNf))
     setSimValorPed(String(sel.valorPedido))
     setSimUmbNf(sel.umbNf)
@@ -1714,6 +1757,125 @@ export function ConversoesPendentes() {
                   >
                     + Adicionar conversão
                   </button>
+
+                  {/* ── as outras linhas do mesmo item ───────────────────
+                      O caso que motivou: um pedido com o mesmo item em várias
+                      linhas, datas diferentes, e o fornecedor antecipando
+                      algumas. A NF fecha com a SOMA de várias e com nenhuma
+                      sozinha — o Executar casa uma a uma, sobra o resto, e é
+                      do resto que nasce a suspeita.
+
+                      Marcar soma a quantidade na simulação. Nenhuma vem
+                      marcada: qual linha o fornecedor quis atender é coisa que
+                      só quem está olhando sabe. */}
+                  {sel.linhasItem.length > 0 && (
+                    <div className="rounded border border-zinc-800 p-2 space-y-2">
+                      <div className="flex flex-wrap items-baseline gap-2">
+                        <span className="font-semibold text-zinc-300">
+                          Outras linhas deste item no mesmo Executar
+                        </span>
+                        <span className="text-zinc-600">
+                          {sel.linhasItem.length} linha(s) · saldo como estava antes do
+                          processamento
+                        </span>
+                      </div>
+
+                      <div className="space-y-1">
+                        {sel.linhasItem.map(l => {
+                          const k = l.pedido + '|' + l.item
+                          const marcada = somadas.has(k)
+                          const ehADoCaso = l.pedido === sel.pedido
+                          return (
+                            <label
+                              key={k}
+                              className={`flex flex-wrap items-center gap-2 rounded border px-2 py-1 cursor-pointer ${
+                                marcada ? 'border-green-700 bg-green-950/30' : 'border-zinc-800'
+                              }`}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={marcada}
+                                onChange={e => {
+                                  const n = new Set(somadas)
+                                  if (e.target.checked) n.add(k)
+                                  else n.delete(k)
+                                  setSomadas(n)
+                                }}
+                              />
+                              <span className="font-mono text-zinc-300">
+                                {l.pedido}/{l.item}
+                              </span>
+                              <span className="font-mono text-amber-400">
+                                {num(l.saldo)} {l.umb}
+                              </span>
+                              <span className="font-mono text-zinc-500">
+                                a {num(l.valorUn)}
+                              </span>
+                              {l.entrega && (
+                                <span className="text-zinc-600">entrega {l.entrega}</span>
+                              )}
+                              {l.centro && <span className="text-zinc-600">{l.centro}</span>}
+                              {ehADoCaso && (
+                                <span className="ml-auto text-zinc-500">pedido do caso</span>
+                              )}
+                            </label>
+                          )
+                        })}
+                      </div>
+
+                      {/* A soma vira a QUANTIDADE simulada, e não o saldo: o que
+                          se quer testar é "se a nota tivesse vindo para todas
+                          estas linhas, o cadastro fechava?". */}
+                      {(() => {
+                        const soma = sel.linhasItem
+                          .filter(l => somadas.has(l.pedido + '|' + l.item))
+                          .reduce((a, l) => a + l.saldo, 0)
+
+                        const somaVal = sel.linhasItem
+                          .filter(l => somadas.has(l.pedido + '|' + l.item))
+                          .reduce((a, l) => a + l.saldo * l.valorUn, 0)
+
+                        if (somadas.size === 0) {
+                          return (
+                            <p className="text-zinc-600">
+                              Marque as linhas para somar o saldo delas e jogar na simulação.
+                            </p>
+                          )
+                        }
+
+                        return (
+                          <div className="flex flex-wrap items-end gap-2">
+                            <Campo
+                              rotulo={`soma de ${somadas.size} linha(s)`}
+                              valor={num(soma)}
+                              cor="text-green-400"
+                            />
+                            <Campo
+                              rotulo="preço médio ponderado"
+                              valor={soma !== 0 ? num(somaVal / soma) : '—'}
+                              titulo="Total dividido pela quantidade. É com ele que o preço da NF se compara quando a nota atende várias linhas de preços diferentes."
+                            />
+                            <button
+                              onClick={() => setSimQtd(String(soma))}
+                              className="px-2 py-1 rounded bg-zinc-800 hover:bg-zinc-700"
+                              title="Joga a soma na quantidade simulada abaixo."
+                            >
+                              usar como qtd NF
+                            </button>
+                            <button
+                              onClick={() => {
+                                if (soma !== 0) setSimValorPed(String(somaVal / soma))
+                              }}
+                              className="px-2 py-1 rounded bg-zinc-800 hover:bg-zinc-700"
+                              title="Joga o preço médio ponderado no valor do pedido simulado."
+                            >
+                              usar como valor pedido
+                            </button>
+                          </div>
+                        )
+                      })()}
+                    </div>
+                  )}
 
                   {/* ── simular ──────────────────────────────────────────
                       Começa nos números da nota que gerou o caso e é
