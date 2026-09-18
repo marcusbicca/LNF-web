@@ -9,6 +9,7 @@ import { Historico } from './pages/Historico'
 import { Configuracoes } from './pages/Configuracoes'
 import { Solicitacoes } from './pages/Solicitacoes'
 import { Respostas } from './pages/Respostas'
+import { Presenca } from './pages/Presenca'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Trocar de aba não pode apagar o trabalho
@@ -20,7 +21,7 @@ import { Respostas } from './pages/Respostas'
 //
 // ── por que não montar tudo desde o começo ──────────────────────────────────
 //
-// Porque cada página busca os dados dela no primeiro render. Montar as oito de
+// Porque cada página busca os dados dela no primeiro render. Montar todas de
 // uma vez faria a abertura do app disparar as consultas de todas — e, na conta
 // que importa neste projeto, cada consulta é um run do fluxo do Power
 // Automate, pago pela cota de uma pessoa só.
@@ -60,6 +61,7 @@ export default function App() {
         {painel('historico', <Historico />)}
         {painel('solicitacoes', <Solicitacoes />)}
         {painel('respostas', <Respostas />)}
+        {painel('presenca', <Presenca />)}
         {painel('config', <Configuracoes />)}
       </Layout>
     </AppProvider>

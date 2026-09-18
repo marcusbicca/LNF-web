@@ -852,11 +852,22 @@ export class SupabaseService {
   }
 
   // Uma página de linhas de qualquer tabela (paginação/ordem/filtros do caller).
+  //
+  // 'select' existe por causa das colunas GORDAS. O historico carrega 'nfs' e
+  // 'detalhe' em jsonb; varrer a tabela inteira com select=* só para contar
+  // ações traria megabytes que ninguém vai ler. Ausente continua sendo '*',
+  // que é o que todo chamador anterior espera.
   async lerLinhas(
     table: string,
-    opts: { order?: string; limit?: number; offset?: number; filtros?: string } = {},
+    opts: {
+      order?: string
+      limit?: number
+      offset?: number
+      filtros?: string
+      select?: string
+    } = {},
   ): Promise<Row[]> {
-    const parts = ['select=*']
+    const parts = [`select=${opts.select ?? '*'}`]
     if (opts.order) parts.push(`order=${opts.order}`)
     if (opts.limit != null) parts.push(`limit=${opts.limit}`)
     if (opts.offset != null) parts.push(`offset=${opts.offset}`)
