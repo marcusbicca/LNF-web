@@ -52,6 +52,16 @@ import {
 const CAT_KEY = 'lnf_catalogo_pipes'
 const SESS_KEY = 'lnf_sessao_remota'
 
+/**
+ * De quanto em quanto tempo a tela se recarrega sozinha, com a aba à vista.
+ *
+ * Vinte segundos porque o que se espera é uma máquina PEGAR uma solicitação, e
+ * o canal remoto dela consulta a cada minuto (app_control.remoto_intervalo_seg).
+ * Metade desse ritmo mostra a reserva no tique seguinte ao que ela aconteceu;
+ * mais rápido que isso só gastaria leitura para ver o mesmo estado.
+ */
+const RECARGA_MS = 20_000
+
 interface SessaoAtiva {
   id: string
   executor: string
@@ -377,6 +387,48 @@ export function Solicitacoes() {
   useEffect(() => {
     void carregarSessoes()
     void carregarUniversais()
+  }, [carregarSessoes, carregarUniversais])
+
+  // ── a tela se atualiza sozinha ────────────────────────────────────────────
+  //
+  // A lista carregava UMA vez, na montagem. Quem pegou uma sessão depois disso
+  // só aparecia com F5 na página inteira — e a sessão que interessa é
+  // justamente a que alguém acabou de pegar, porque é o endereço dos próximos
+  // passos.
+  //
+  // O relógio de 30s que já existia não resolve: ele só recalcula "há quanto
+  // tempo" sobre os dados que já estavam na memória.
+  //
+  // ── só com a aba à vista, e por dois motivos ─────────────────────────────
+  //
+  // Cada volta são duas leituras (sessões e universais), e a de sessões traz
+  // 200 linhas. Numa aba esquecida aberta a tarde toda isso é consumo de cota
+  // para ninguém ver — e a cota é compartilhada com o parque inteiro.
+  //
+  // O segundo motivo é que aba escondida não precisa estar em dia: precisa
+  // ESTAR em dia quando reaparecer. Daí o listener: voltar para a aba dispara
+  // uma recarga na hora, em vez de deixar você olhando dado velho até o
+  // próximo tique.
+  useEffect(() => {
+    const atualizar = () => {
+      if (document.hidden) return
+      void carregarSessoes()
+      void carregarUniversais()
+    }
+
+    const aoVoltar = () => {
+      if (!document.hidden) atualizar()
+    }
+
+    const t = setInterval(atualizar, RECARGA_MS)
+    document.addEventListener('visibilitychange', aoVoltar)
+    window.addEventListener('focus', aoVoltar)
+
+    return () => {
+      clearInterval(t)
+      document.removeEventListener('visibilitychange', aoVoltar)
+      window.removeEventListener('focus', aoVoltar)
+    }
   }, [carregarSessoes, carregarUniversais])
 
   // ── 1. abrir sessão ────────────────────────────────────────────────────────
