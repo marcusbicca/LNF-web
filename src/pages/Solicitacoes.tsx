@@ -52,15 +52,41 @@ import {
 const CAT_KEY = 'lnf_catalogo_pipes'
 const SESS_KEY = 'lnf_sessao_remota'
 
-/**
- * De quanto em quanto tempo a tela se recarrega sozinha, com a aba à vista.
- *
- * Vinte segundos porque o que se espera é uma máquina PEGAR uma solicitação, e
- * o canal remoto dela consulta a cada minuto (app_control.remoto_intervalo_seg).
- * Metade desse ritmo mostra a reserva no tique seguinte ao que ela aconteceu;
- * mais rápido que isso só gastaria leitura para ver o mesmo estado.
- */
-const RECARGA_MS = 20_000
+// ── o rascunho do formulário ───────────────────────────────────────────────
+//
+// Trocar para a aba Respostas DESMONTA esta tela, e com ela ia embora tudo que
+// estava meio preenchido: a ação escolhida, os campos, o JSON digitado à mão e
+// a fila montada. Voltar era recomeçar.
+//
+// O catálogo e a sessão já sobreviviam, cada um com a sua chave. O que estava
+// em andamento, não — e é justamente o que dá mais trabalho de refazer.
+//
+// A SENHA DO SAP fica de fora, de propósito. Ela é o único campo aqui que não
+// pode encostar no disco; sem isso, uma conveniência de formulário viraria uma
+// senha guardada em texto no navegador.
+const RASC_KEY = 'lnf_solicitacao_rascunho'
+
+interface Rascunho {
+  acao?: string
+  valores?: Record<string, string>
+  marcados?: Record<string, boolean>
+  modoJson?: boolean
+  textoJson?: string
+  destinatario?: string
+  sapUsuario?: string
+  fila?: Array<{ acao: string; payload: Record<string, unknown> }>
+}
+
+function lerRascunho(): Rascunho {
+  try {
+    const t = localStorage.getItem(RASC_KEY)
+    if (!t) return {}
+    const o = JSON.parse(t)
+    return o && typeof o === 'object' ? (o as Rascunho) : {}
+  } catch {
+    return {}
+  }
+}
 
 interface SessaoAtiva {
   id: string
@@ -166,7 +192,7 @@ export function Solicitacoes() {
   >([])
 
   const [incluirPipes, setIncluirPipes] = useState(true)
-  const [sapUsuario, setSapUsuario] = useState('')
+  const [sapUsuario, setSapUsuario] = useState(() => lerRascunho().sapUsuario ?? '')
 
   // ── para QUEM abrir a sessão ──────────────────────────────────────────────
   //
@@ -179,7 +205,7 @@ export function Solicitacoes() {
   //
   // Quem filtra é o banco, na pegar_solicitacao — aqui é só a coluna
   // 'destinatario' da linha.
-  const [destinatario, setDestinatario] = useState('')
+  const [destinatario, setDestinatario] = useState(() => lerRascunho().destinatario ?? '')
 
   // ── quem NÃO pode pegar ──────────────────────────────────────────────────
   //
@@ -231,9 +257,9 @@ export function Solicitacoes() {
   }
   const [sapSenha, setSapSenha] = useState('')
 
-  const [acao, setAcao] = useState('')
-  const [valores, setValores] = useState<Record<string, string>>({})
-  const [marcados, setMarcados] = useState<Record<string, boolean>>({})
+  const [acao, setAcao] = useState(() => lerRascunho().acao ?? '')
+  const [valores, setValores] = useState<Record<string, string>>(() => lerRascunho().valores ?? {})
+  const [marcados, setMarcados] = useState<Record<string, boolean>>(() => lerRascunho().marcados ?? {})
 
   // ── modo JSON cru ─────────────────────────────────────────────────────────
   //
@@ -247,13 +273,15 @@ export function Solicitacoes() {
   // um payload chega pronto de qualquer lugar — de uma conversa, de um log, de
   // uma linha copiada da resposta anterior — e ter de desmontá-lo em caixinhas
   // para a tela remontar é trabalho que não produz nada.
-  const [modoJson, setModoJson] = useState(false)
-  const [textoJson, setTextoJson] = useState('')
+  const [modoJson, setModoJson] = useState(() => lerRascunho().modoJson ?? false)
+  const [textoJson, setTextoJson] = useState(() => lerRascunho().textoJson ?? '')
 
   // Fila local: os passos que o usuário montou antes de enviar. Só vira
   // solicitação no banco quando ele manda — assim dá para revisar a sequência
   // inteira antes de disparar.
-  const [fila, setFila] = useState<Array<{ acao: string; payload: Record<string, unknown> }>>([])
+  const [fila, setFila] = useState<Array<{ acao: string; payload: Record<string, unknown> }>>(
+    () => lerRascunho().fila ?? [],
+  )
   const [universais, setUniversais] = useState<Universal[]>([])
 
   // ── o detalhe por máquina ────────────────────────────────────────────────
@@ -389,47 +417,47 @@ export function Solicitacoes() {
     void carregarUniversais()
   }, [carregarSessoes, carregarUniversais])
 
-  // ── a tela se atualiza sozinha ────────────────────────────────────────────
+  // ── recarregar é um BOTÃO, não um relógio ────────────────────────────────
   //
-  // A lista carregava UMA vez, na montagem. Quem pegou uma sessão depois disso
-  // só aparecia com F5 na página inteira — e a sessão que interessa é
-  // justamente a que alguém acabou de pegar, porque é o endereço dos próximos
-  // passos.
+  // A primeira versão disto recarregava sozinha a cada 20s. Funcionava, mas
+  // recarga automática numa tela que é um FORMULÁRIO é um incômodo com o tempo
+  // contado: ela dispara enquanto você digita, e qualquer coisa que ela
+  // mexesse na tela mexeria no meio do seu trabalho.
   //
-  // O relógio de 30s que já existia não resolve: ele só recalcula "há quanto
-  // tempo" sobre os dados que já estavam na memória.
+  // Aqui quem sabe a hora de olhar de novo é você — normalmente logo depois de
+  // mandar algo, ou quando volta de outra aba. Um clique é mais barato que um
+  // relógio que gira a tarde toda lendo 200 linhas para ninguém ver.
+  const [recarregando, setRecarregando] = useState(false)
+
+  async function recarregar() {
+    setRecarregando(true)
+    try {
+      await Promise.all([carregarSessoes(), carregarUniversais()])
+    } finally {
+      setRecarregando(false)
+    }
+  }
+
+  // ── e o rascunho é gravado a cada mudança ────────────────────────────────
   //
-  // ── só com a aba à vista, e por dois motivos ─────────────────────────────
+  // Não na desmontagem: a limpeza de um efeito não roda quando a aba do
+  // navegador fecha, e é aí que se perderia mais. Gravando a cada tecla, o
+  // pior caso é a última letra.
   //
-  // Cada volta são duas leituras (sessões e universais), e a de sessões traz
-  // 200 linhas. Numa aba esquecida aberta a tarde toda isso é consumo de cota
-  // para ninguém ver — e a cota é compartilhada com o parque inteiro.
-  //
-  // O segundo motivo é que aba escondida não precisa estar em dia: precisa
-  // ESTAR em dia quando reaparecer. Daí o listener: voltar para a aba dispara
-  // uma recarga na hora, em vez de deixar você olhando dado velho até o
-  // próximo tique.
+  // Sem 'sapSenha' — ver a nota do RASC_KEY.
   useEffect(() => {
-    const atualizar = () => {
-      if (document.hidden) return
-      void carregarSessoes()
-      void carregarUniversais()
+    try {
+      localStorage.setItem(
+        RASC_KEY,
+        JSON.stringify({
+          acao, valores, marcados, modoJson, textoJson,
+          destinatario, sapUsuario, fila,
+        } as Rascunho),
+      )
+    } catch {
+      /* modo privado ou cota cheia: o rascunho é conveniência, não pode quebrar a tela */
     }
-
-    const aoVoltar = () => {
-      if (!document.hidden) atualizar()
-    }
-
-    const t = setInterval(atualizar, RECARGA_MS)
-    document.addEventListener('visibilitychange', aoVoltar)
-    window.addEventListener('focus', aoVoltar)
-
-    return () => {
-      clearInterval(t)
-      document.removeEventListener('visibilitychange', aoVoltar)
-      window.removeEventListener('focus', aoVoltar)
-    }
-  }, [carregarSessoes, carregarUniversais])
+  }, [acao, valores, marcados, modoJson, textoJson, destinatario, sapUsuario, fila])
 
   // ── 1. abrir sessão ────────────────────────────────────────────────────────
   async function abrirSessao() {
@@ -754,7 +782,22 @@ export function Solicitacoes() {
     <div className="p-4 space-y-6 max-w-3xl">
       {/* ── 1. sessão ─────────────────────────────────────────────────────── */}
       <section className="border border-zinc-800 rounded p-4 space-y-3">
-        <h2 className="font-semibold">1. Sessão</h2>
+        <div className="flex items-center justify-between">
+          <h2 className="font-semibold">1. Sessão</h2>
+
+          {/* Relê as sessões e as universais. Fica aqui, e não no topo da
+              página, porque é a lista logo abaixo que ele atualiza — e porque
+              o momento de clicar costuma ser o de escolher para onde mandar. */}
+          <button
+            onClick={() => void recarregar()}
+            disabled={recarregando}
+            title="Relê as sessões e as universais, sem recarregar a página"
+            className="text-xs text-zinc-400 hover:text-zinc-100 disabled:opacity-40
+                       border border-zinc-700 rounded px-2 py-1"
+          >
+            {recarregando ? 'atualizando…' : '↻ atualizar'}
+          </button>
+        </div>
 
         {sessao ? (
           <div className="bg-zinc-900 rounded p-3 text-sm space-y-1">
