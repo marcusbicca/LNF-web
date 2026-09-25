@@ -1,7 +1,15 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // SupabaseService — camada de dados do LNF-Web sobre o Postgres do Supabase
-// (PostgREST), acessado via um fluxo do Power Automate que guarda o secret no
-// servidor (o secret NUNCA vai para o browser — o Supabase bloqueia isso).
+// (PostgREST). O transporte padrão hoje é a Edge Function lnf-api (campo
+// "URL da Edge Function" + chave x-lnf-chave): é ela que guarda o secret
+// (service_role) e DECIDE cada escrita (barrarEscrita). O secret NUNCA vai
+// para o browser — o Supabase bloqueia isso.
+//
+// O fluxo do Power Automate continua como OPÇÃO (campo "URL do Power
+// Automate"): hoje ele é só um HTTP que repassa o corpo para a lnf-api e
+// devolve a resposta — não guarda mais credencial de banco nem decide nada.
+// Serve para verificar se o caminho pelo PA está no ar. Se a URL da Edge
+// estiver preenchida, ela vence (ver `viaEdge`).
 //
 // Substitui o antigo GitHubService (que lia/gravava os JSONs do LNF-files). Em
 // vez de arquivos, os dados vivem em tabelas:
@@ -20,11 +28,12 @@
 // Mapeamento coluna↔chave espelha o lado C# (SupabaseSync/SupabaseStore do
 // LNF-Coreon), para que os dois produzam/consumam exatamente o mesmo formato.
 //
-// Config: o campo "URL do Power Automate" (o mesmo fluxo que o LNF-Coreon usa).
-// Fica só no localStorage do navegador — não é chave secreta, é o endpoint do
-// fluxo, que por sua vez valida o usuário e executa a chamada REST no Supabase.
+// Config: "URL da Edge Function" (+ chave) ou, como alternativa, "URL do Power
+// Automate". Ficam só no localStorage do navegador — não são chave secreta do
+// banco: são endpoints. Quem valida o usuário e autoriza a escrita é a lnf-api,
+// em ambos os caminhos (pelo PA, ela é chamada por baixo).
 //
-// Contrato do fluxo (idêntico ao lado C#): recebe um JSON
+// Contrato (idêntico ao lado C#, e o mesmo pela Edge ou pelo PA): recebe um JSON
 //   { op:"SELECT"|"UPDATE"|"UPSERT"|"DELETE"|"OPENAPI", tabela, query|linhas|conflito|filtro, usuario }
 // e devolve o corpo da API do Supabase (para SELECT, o array de linhas).
 // ─────────────────────────────────────────────────────────────────────────────
