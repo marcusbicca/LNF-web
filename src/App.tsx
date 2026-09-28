@@ -1,14 +1,18 @@
 import { useEffect, useState } from 'react'
 import { AppProvider } from './context/AppContext'
 import { Layout, type Page } from './components/Layout'
+import { Inicio } from './pages/Inicio'
 import { Lancamento } from './pages/Lancamento'
 import { Mapeamento } from './pages/Mapeamento'
 import { Cadastros } from './pages/Cadastros'
+import { Controle } from './pages/Controle'
 import { Tabelas } from './pages/Tabelas'
 import { Historico } from './pages/Historico'
 import { Configuracoes } from './pages/Configuracoes'
 import { Solicitacoes } from './pages/Solicitacoes'
 import { Respostas } from './pages/Respostas'
+import { Coletas } from './pages/Coletas'
+import { TermosGlobais } from './pages/TermosGlobais'
 import { Presenca } from './pages/Presenca'
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -37,8 +41,8 @@ import { Presenca } from './pages/Presenca'
 // quebraria a conta e a página voltaria a rolar.
 // ─────────────────────────────────────────────────────────────────────────────
 export default function App() {
-  const [page, setPage] = useState<Page>('mapeamento')
-  const [visitadas, setVisitadas] = useState<Page[]>(['mapeamento'])
+  const [page, setPage] = useState<Page>('inicio')
+  const [visitadas, setVisitadas] = useState<Page[]>(['inicio'])
 
   useEffect(() => {
     setVisitadas((v) => (v.includes(page) ? v : [...v, page]))
@@ -54,13 +58,17 @@ export default function App() {
   return (
     <AppProvider>
       <Layout page={page} onNavigate={setPage}>
+        {painel('inicio', <Inicio />)}
         {painel('lancamento', <Lancamento />)}
         {painel('mapeamento', <Mapeamento />)}
         {painel('cadastros', <Cadastros />)}
+        {painel('controle', <Controle />)}
         {painel('tabelas', <Tabelas />)}
         {painel('historico', <Historico />)}
         {painel('solicitacoes', <Solicitacoes />)}
         {painel('respostas', <Respostas />)}
+        {painel('coletas', <Coletas />)}
+        {painel('termos', <TermosGlobais />)}
         {painel('presenca', <Presenca />)}
         {painel('config', <Configuracoes />)}
       </Layout>
