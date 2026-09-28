@@ -106,7 +106,7 @@ export function Configuracoes() {
 
       {itens && !erroItens && (
         <div className="bg-green-950 border border-green-800 rounded-lg p-3 text-green-300 text-sm space-y-1">
-          <p>✅ Conectado via Power Automate</p>
+          <p>✅ Conectado via {config?.edgeUrl ? 'Edge Function (lnf-api)' : 'Power Automate'}</p>
           <p className="text-zinc-400">
             {Object.keys(itens).length} fornecedores ·{' '}
             {Object.values(itens).reduce((acc, f) => acc + Object.keys(f).length, 0)} itens SAP
@@ -116,12 +116,16 @@ export function Configuracoes() {
 
       <div className="bg-zinc-900 border border-zinc-700 rounded-lg p-3 text-xs text-zinc-500 space-y-1">
         <p className="font-medium text-zinc-400">Como funciona:</p>
-        <p>• O secret do Supabase fica no fluxo do Power Automate — nunca no browser.</p>
-        <p>• A leitura e a escrita passam pelo mesmo fluxo (op SELECT/UPSERT/DELETE).</p>
-        <p>• O campo "Usuário" vai no pedido de escrita; o fluxo decide quem pode gravar.</p>
+        <p>• Quem guarda o secret do Supabase e <b>decide cada escrita</b> é a Edge Function
+          <code className="mx-1">lnf-api</code> — nunca o browser.</p>
+        <p>• O Power Automate é uma <b>alternativa</b> de transporte: hoje ele só repassa o
+          corpo para a <code>lnf-api</code> e devolve a resposta. Só entra em uso quando a URL
+          da Edge acima está vazia.</p>
+        <p>• Mesmo contrato nos dois caminhos (op SELECT/UPSERT/DELETE); o campo "Usuário" vai
+          no pedido e a <code>lnf-api</code> decide quem pode gravar.</p>
       </div>
 
-      <DiagnosticoPa />
+      <DiagnosticoPa cfg={form} />
 
       <ImportarLnfFiles cfg={form} />
     </div>
@@ -137,12 +141,35 @@ export function Configuracoes() {
 //
 // A URL do fluxo não aparece aqui de propósito: ela carrega a chave de
 // invocação, e este painel foi feito pra ser copiado e colado.
-function DiagnosticoPa() {
+function DiagnosticoPa({ cfg }: { cfg: Config }) {
   const [aberto, setAberto] = useState(false)
   const [expandida, setExpandida] = useState<number | null>(null)
   const [copiado, setCopiado] = useState(false)
+  const [testando, setTestando] = useState(false)
+  const [resultado, setResultado] = useState<{ ok: boolean; detalhe: string } | null>(null)
 
   const chamadas = useSyncExternalStore(observarPa, lerChamadasPa)
+
+  // Testa o Power Automate ESPECIFICAMENTE, mesmo quando a Edge Function é o
+  // transporte ativo: monta uma instância só com a paUrl (edgeUrl vazia), então
+  // o serviço usa o caminho do PA. A chamada também entra na lista abaixo.
+  async function testarPa() {
+    setResultado(null)
+    if (!cfg.paUrl?.trim()) {
+      setResultado({ ok: false, detalhe: 'Preencha a URL do Power Automate em Configurações.' })
+      return
+    }
+    setTestando(true)
+    try {
+      const sb = new SupabaseService({ paUrl: cfg.paUrl, usuario: cfg.usuario })
+      const r = await sb.diagnosticar()
+      setResultado({ ok: r.ok, detalhe: r.detalhe })
+    } catch (e) {
+      setResultado({ ok: false, detalhe: (e as Error).message })
+    } finally {
+      setTestando(false)
+    }
+  }
 
   async function copiar() {
     try {
@@ -176,6 +203,33 @@ function DiagnosticoPa() {
             "Entradas e Saídas Seguras" esconde do histórico do Power Automate. Fica só nesta
             aba e some ao recarregar a página. A URL do fluxo não é registrada.
           </p>
+
+          <div className="space-y-2">
+            <button
+              onClick={() => void testarPa()}
+              disabled={testando || !cfg.paUrl?.trim()}
+              className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white text-sm font-medium py-2 rounded-lg transition-colors"
+            >
+              {testando ? 'Testando o Power Automate...' : 'Testar o Power Automate agora'}
+            </button>
+            <p className="text-xs text-zinc-600">
+              Força uma leitura pelo Power Automate mesmo com a Edge Function ativa — para
+              conferir se o fluxo está no ar e repassando para a <code>lnf-api</code>.
+            </p>
+            {resultado && (
+              <div
+                className={
+                  'rounded-lg p-2.5 text-sm border ' +
+                  (resultado.ok
+                    ? 'bg-green-950 border-green-800 text-green-300'
+                    : 'bg-red-950 border-red-800 text-red-300')
+                }
+              >
+                {resultado.ok ? '✅ Power Automate OK' : '❌ Power Automate falhou'} —{' '}
+                <span className="text-zinc-400">{resultado.detalhe}</span>
+              </div>
+            )}
+          </div>
 
           <div className="flex gap-2">
             <button
@@ -330,8 +384,9 @@ function ImportarLnfFiles({ cfg }: { cfg: Config }) {
         <div className="p-3 border-t border-zinc-800 space-y-3">
           <p className="text-xs text-zinc-500">
             Puxa forn.json, itens.json, centros.json, usersList.json e termos_globais.json do
-            GitHub e faz upsert no Supabase (via Power Automate). Use quando o LNF-files tiver
-            dados mais novos que o banco. Fornecedores são importados antes dos materiais (FK).
+            GitHub e faz upsert no Supabase (pela Edge Function <code>lnf-api</code>, ou pelo
+            Power Automate se só ele estiver configurado). Use quando o LNF-files tiver dados
+            mais novos que o banco. Fornecedores são importados antes dos materiais (FK).
           </p>
 
           <Field label="GitHub Token (leitura do LNF-files)">
