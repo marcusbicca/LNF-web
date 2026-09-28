@@ -7,20 +7,30 @@
 ## 0. Migração para Supabase (2026-07) — LEIA PRIMEIRO
 
 O app **deixou de usar o GitHub/LNF-files** como camada de dados. Agora lê e grava no
-**Supabase (PostgREST) através de um fluxo do Power Automate** — o mesmo fluxo que o
+**Supabase (PostgREST) através da Edge Function `lnf-api`** — a mesma ponte que o
 LNF-Coreon usa. As telas continuam iguais; só mudou a fonte dos dados.
 
-**Por que via Power Automate e não direto:** a secret key (service_role) do Supabase
+> **Atualização 09/2026 — a ponte é a Edge Function, não mais o Power Automate.**
+> Quem guarda o secret (`service_role`) e **decide cada escrita** (`barrarEscrita`,
+> espelhando as permissões do Coreon) é a Edge Function `lnf-api`. O **Power Automate
+> continua como OPÇÃO** de transporte (campo "URL do Power Automate"), mas hoje ele é
+> só um HTTP que **repassa o corpo para a `lnf-api`** e devolve a resposta — não guarda
+> credencial de banco nem decide nada. Serve para verificar se o caminho pelo PA está
+> no ar. Preenchendo a URL da Edge, ela vence (`viaEdge`).
+
+**Por que via ponte e não direto:** a secret key (service_role) do Supabase
 **não pode ser usada no browser** — ela ignora o RLS e o Supabase bloqueia de propósito
 (`401 Forbidden use of secret API key in browser`). A publishable/anon key é browser-safe
-mas só lê. Para escrever sem expor secret e sem montar login, o browser chama o **fluxo do
-PA**, que guarda o secret no servidor e executa a chamada REST. É o mesmo padrão do `.exe`.
+mas só lê (e desde a migração 0066 nem chama as RPC). Para escrever sem expor secret e sem
+montar login, o browser chama a **`lnf-api`** (direto, ou pelo PA como repassador), que
+guarda o secret no servidor, valida o usuário e executa a chamada REST. É o mesmo padrão do `.exe`.
 
-**Configurações**: informe a **URL do fluxo do Power Automate** (no lugar da antiga key) +
-**Usuário**. O fluxo recebe `{ op:"SELECT"|"UPSERT"|"DELETE"|"OPENAPI", tabela,
-query|linhas|conflito|filtro, usuario }` e devolve o corpo da API. O campo Usuário vai no
-payload de escrita e o fluxo decide quem pode gravar (mesmo controle do userList do Coreon).
-A URL fica só no localStorage do navegador.
+**Configurações**: informe a **URL da Edge Function** (+ a chave `x-lnf-chave`) ou, como
+alternativa, a **URL do fluxo do Power Automate**, mais o **Usuário**. Em qualquer caminho o
+corpo é `{ op:"SELECT"|"UPSERT"|"DELETE"|"OPENAPI", tabela, query|linhas|conflito|filtro,
+usuario }` e a resposta é o corpo da API. O campo Usuário vai no payload de escrita e **a
+`lnf-api` decide quem pode gravar** (mesmo controle do userList do Coreon). As URLs ficam só
+no localStorage do navegador.
 
 **Mapa arquivo → tabela** (o "path" virou seletor lógico pelo basename):
 
@@ -33,9 +43,11 @@ A URL fica só no localStorage do navegador.
 | `termos_globais.json`| `termos_globais`  | id (surrogate)        |
 
 **Arquitetura da camada de dados** (`src/services/supabase.ts`):
-- Transporte único `pa(payload)` — POST no fluxo do PA. `getAll` = op SELECT; `upsert` = op
-  UPSERT (chunk 500); `del` = op DELETE; `openApi` = op OPENAPI. Toleram a resposta do PA
-  vindo como array, string-JSON ou embrulhada (`{body|value|data}`).
+- Transporte único `pa(payload)` — POST na Edge Function `lnf-api` (ou no fluxo do PA, que
+  repassa para ela). `getAll` = op SELECT; `upsert` = op UPSERT (chunk 500); `del` = op
+  DELETE; `openApi` = op OPENAPI. Toleram a resposta vindo como array, string-JSON ou
+  embrulhada (`{body|value|data}`). Escolhe a Edge quando `edgeUrl` está preenchida
+  (`viaEdge`), mandando a chave em `x-lnf-chave`; senão cai no PA.
 - `lerArquivo(path)` — SELECT e **reconstrói o shape JSON legado** que as telas já consomem.
   O mapa coluna↔chave espelha o lado C# (`SupabaseSync`/`SupabaseStore` do LNF-Coreon).
 - `gravarArquivo('itens.json', …)` — escrita de materiais por **diff por linha** (upsert só
