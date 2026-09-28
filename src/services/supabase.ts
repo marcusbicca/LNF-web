@@ -146,7 +146,7 @@ export function buildMaterialRow(fornecedor: string, codigo: string, item: Row):
 }
 
 export function buildCentroRow(centro: string, c: Row): Row {
-  return {
+  const row: Row = {
     centro,
     generic_lote: strOrNull(c.GenericLote),
     generic_val: strOrNull(c.GenericVal),
@@ -156,6 +156,15 @@ export function buildCentroRow(centro: string, c: Row): Row {
     forn_overrides: obj(c.FornOverrides),
     centro_pardini: boolp(c.CentroPardini),
   }
+  // empresa e zebra_caminhos historicamente NÃO iam no corpo (o upsert só toca
+  // colunas presentes, então omiti-las preservava). Agora o LNF-web edita as
+  // duas: quando a tela as fornece explicitamente (chave presente no objeto),
+  // entram no corpo; quando não (outros chamadores), continuam preservadas por
+  // omissão. O editor de Zebra preserva o sub-objeto 'layouts' de cada
+  // impressora (as coordenadas de ZPL), mexendo só em nome/caminho/dpi/escuridão.
+  if ('Empresa' in c) row.empresa = strOrNull(c.Empresa)
+  if ('ZebraCaminhos' in c) row.zebra_caminhos = Array.isArray(c.ZebraCaminhos) ? c.ZebraCaminhos : []
+  return row
 }
 
 export function buildUsuarioRow(username: string, u: Row): Row {

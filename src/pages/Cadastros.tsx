@@ -4,20 +4,23 @@ import { QuemPediu } from '../components/QuemPediu'
 import { SupabaseService } from '../services/supabase'
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Cadastros — CRUD manual de fornecedores, usuários e centros, lendo/gravando
-// direto no Supabase (sem Power Automate, sem GitHub).
+// Cadastros — CRUD manual de fornecedores, usuários, centros e empresas,
+// lendo/gravando direto no Supabase (via lnf-api; sem GitHub).
 //
-//   • forn.json      → tabela fornecedores (PK nome)
-//   • usersList.json → tabela usuarios     (PK username)
-//   • centros.json   → tabela centros      (PK centro)
+//   • forn.json      → tabela fornecedores (PK nome)      — shape legado
+//   • usersList.json → tabela usuarios     (PK username)  — shape legado
+//   • centros.json   → tabela centros      (PK centro)    — shape legado
+//   • (tabela crua)  → tabela empresas     (PK codigo)    — via load()/lerLinhas
 //
-// A leitura reconstrói o shape JSON legado (via SupabaseService.lerArquivo);
-// a escrita é POR LINHA (upsert/delete por entidade) — nada de reescrever o
-// "arquivo" inteiro, o que elimina a perda de dados por truncamento.
+// As três primeiras leem reconstruindo o shape JSON legado (lerArquivo);
+// empresas lê a tabela crua (load()). A escrita é sempre POR LINHA
+// (upsert/delete por entidade) — nada de reescrever o "arquivo" inteiro.
 //
 // Cada entidade vira uma lista de { key, data }. Campos texto/número via input,
-// listas via textarea (1 por linha) e booleanos via checkbox. FornOverrides de
-// centros é preservado (não editável por campos simples).
+// listas via textarea (1 por linha) e booleanos via checkbox. Em centros, as
+// impressoras Zebra (zebra_caminhos) têm editor próprio (ZebraEditor), que
+// preserva o layout de ZPL de cada impressora; FornOverrides é preservado
+// (não editável por campos simples).
 // ─────────────────────────────────────────────────────────────────────────────
 
 type Data = Record<string, unknown>
@@ -36,11 +39,15 @@ interface FieldSpec {
 }
 
 interface EntityConfig {
-  id: 'fornecedores' | 'usuarios' | 'centros'
+  id: 'fornecedores' | 'usuarios' | 'centros' | 'empresas'
   label: string
-  file: string
+  // Entidades baseadas em arquivo legado (forn/usuarios/centros) leem via
+  // lerArquivo(file)+parse. Entidades de TABELA CRUA (empresas) trazem um
+  // load() próprio e não usam file/parse — a caixa "Arquivo:" some para elas.
+  file?: string
   keyLabel: string
-  parse: (raw: unknown) => Entry[]
+  parse?: (raw: unknown) => Entry[]
+  load?: (svc: SupabaseService) => Promise<Entry[]>
   // Escrita por linha no Supabase. oldKey presente = rename (chave mudou).
   save: (svc: SupabaseService, key: string, data: Data, oldKey?: string) => Promise<void>
   remove: (svc: SupabaseService, key: string) => Promise<void>
@@ -315,12 +322,16 @@ const ENTIDADES: EntityConfig[] = [
       return Object.entries(obj).map(([k, v]) => ({
         key: k,
         data: {
+          Empresa: String(v.Empresa ?? ''),
           GenericLote: String(v.GenericLote ?? 'N'),
           GenericVal: String(v.GenericVal ?? '31.12.2099'),
           GenericLoteItems: asList(v.GenericLoteItems),
           Ceps: asList(v.Ceps),
           Cnpjs: asList(v.Cnpjs),
           CentroPardini: !!v.CentroPardini,
+          // Impressoras Zebra do centro. Editáveis aqui (nome/caminho/dpi/
+          // escuridão); o sub-objeto 'layouts' de cada uma é preservado.
+          ZebraCaminhos: Array.isArray(v.ZebraCaminhos) ? v.ZebraCaminhos : [],
           FornOverrides: v.FornOverrides ?? null, // preservado
         },
       }))
@@ -329,33 +340,80 @@ const ENTIDADES: EntityConfig[] = [
       svc.salvarCentro(
         key,
         {
+          Empresa: String(data.Empresa ?? ''),
           GenericLote: String(data.GenericLote ?? 'N'),
           GenericVal: String(data.GenericVal ?? '31.12.2099'),
           GenericLoteItems: asList(data.GenericLoteItems),
           Ceps: asList(data.Ceps),
           Cnpjs: asList(data.Cnpjs),
           CentroPardini: !!data.CentroPardini,
+          ZebraCaminhos: Array.isArray(data.ZebraCaminhos) ? data.ZebraCaminhos : [],
           FornOverrides: data.FornOverrides ?? {},
         },
         oldKey,
       ),
     remove: (svc, key) => svc.removerCentro(key),
     blank: () => ({
+      Empresa: '',
       GenericLote: 'N',
       GenericVal: '31.12.2099',
       GenericLoteItems: [],
       Ceps: [],
       Cnpjs: [],
       CentroPardini: false,
+      ZebraCaminhos: [],
       FornOverrides: null,
     }),
     fields: () => [
+      // Empresa é renderizada como <select> (EmpresaSelect) no formulário, com
+      // as empresas cadastradas — a coluna tem FK, então texto livre erraria.
       { path: 'GenericLote', label: 'Generic Lote', type: 'text' },
       { path: 'GenericVal', label: 'Generic Val', type: 'text' },
       { path: 'GenericLoteItems', label: 'Generic Lote Items', type: 'list' },
       { path: 'Ceps', label: 'CEPs', type: 'list' },
       { path: 'Cnpjs', label: 'CNPJs', type: 'list' },
       { path: 'CentroPardini', label: 'Centro Pardini', type: 'boolean' },
+    ],
+  },
+  {
+    id: 'empresas',
+    label: 'Empresas',
+    keyLabel: 'Código',
+    // Tabela crua (sem arquivo legado): lê e grava linha a linha.
+    load: async svc => {
+      const rows = await svc.lerLinhas('empresas', { order: 'codigo' })
+      return rows.map(r => ({
+        key: String(r.codigo ?? ''),
+        data: {
+          nome: String(r.nome ?? ''),
+          tol_valor_total: Number(r.tol_valor_total ?? 0),
+          tol_valor_item: Number(r.tol_valor_item ?? 0),
+          preco_com_ipi: !!r.preco_com_ipi,
+        },
+      }))
+    },
+    save: async (svc, key, data, oldKey) => {
+      await svc.salvarLinha(
+        'empresas',
+        {
+          codigo: key,
+          nome: String(data.nome ?? ''),
+          tol_valor_total: Number(data.tol_valor_total) || 0,
+          tol_valor_item: Number(data.tol_valor_item) || 0,
+          preco_com_ipi: !!data.preco_com_ipi,
+        },
+        'codigo',
+      )
+      if (oldKey && oldKey !== key)
+        await svc.deletarLinha('empresas', `codigo=eq.${encodeURIComponent(oldKey)}`)
+    },
+    remove: (svc, key) => svc.deletarLinha('empresas', `codigo=eq.${encodeURIComponent(key)}`),
+    blank: () => ({ nome: '', tol_valor_total: 2, tol_valor_item: 0.5, preco_com_ipi: false }),
+    fields: () => [
+      { path: 'nome', label: 'Nome', type: 'text' },
+      { path: 'tol_valor_total', label: 'Tolerância valor TOTAL da NF (R$)', type: 'number' },
+      { path: 'tol_valor_item', label: 'Tolerância valor por ITEM (R$)', type: 'number' },
+      { path: 'preco_com_ipi', label: 'Preço com IPI', type: 'boolean' },
     ],
   },
 ]
@@ -398,6 +456,28 @@ export function Cadastros() {
   const [salvando, setSalvando] = useState(false)
   const [status, setStatus] = useState<string | null>(null)
 
+  // Empresas cadastradas — para o <select> de empresa do centro (a coluna tem
+  // FK, então oferecer as opções evita erro de FK por digitação).
+  const [empresaOpcoes, setEmpresaOpcoes] = useState<Array<{ codigo: string; nome: string }>>([])
+  useEffect(() => {
+    if (!svc) return
+    let vivo = true
+    svc
+      .lerLinhas('empresas', { select: 'codigo,nome', order: 'codigo' })
+      .then(rows => {
+        if (vivo)
+          setEmpresaOpcoes(
+            rows.map(r => ({ codigo: String(r.codigo ?? ''), nome: String(r.nome ?? '') })),
+          )
+      })
+      .catch(() => {
+        /* empresas pode não carregar; o select cai para o valor atual + vazio */
+      })
+    return () => {
+      vivo = false
+    }
+  }, [svc])
+
   // Solicitações de cadastro de fornecedor (tabela solicitacoes_forn, pendentes).
   const [solic, setSolic] = useState<Array<Record<string, unknown>>>([])
   const [solicCnpj, setSolicCnpj] = useState<string | null>(null) // solicitação sendo atendida
@@ -432,11 +512,17 @@ export function Cadastros() {
     setStatus(null)
     setSelKey(null)
     setForm({ key: '', data: ent.blank([]) })
-    const p = pathFor(ent)
-    setPath(p)
     try {
-      const { data } = await svc.lerArquivo(p)
-      setEntries(ent.parse(data))
+      if (ent.load) {
+        // Entidade de tabela crua (empresas): sem arquivo legado.
+        setPath('')
+        setEntries(await ent.load(svc))
+      } else {
+        const p = pathFor(ent)
+        setPath(p)
+        const { data } = await svc.lerArquivo(p)
+        setEntries(ent.parse!(data))
+      }
     } catch (e) {
       setErro((e as Error).message)
       setEntries([])
@@ -628,19 +714,21 @@ export function Cadastros() {
         ))}
       </div>
 
-      {/* Caminho do arquivo */}
-      <div className="flex items-center gap-2">
-        <label className="text-xs text-zinc-500 shrink-0">Arquivo:</label>
-        <input
-          value={path}
-          onChange={e => setPath(e.target.value)}
-          onBlur={() => {
-            localStorage.setItem('lnf_cadpath_' + ent.id, path)
-            void carregar()
-          }}
-          className="flex-1 bg-zinc-900 border border-zinc-700 rounded px-2 py-1 text-xs font-mono focus:outline-none focus:border-green-500"
-        />
-      </div>
+      {/* Caminho do arquivo (só para entidades baseadas em arquivo legado) */}
+      {!ent.load && (
+        <div className="flex items-center gap-2">
+          <label className="text-xs text-zinc-500 shrink-0">Arquivo:</label>
+          <input
+            value={path}
+            onChange={e => setPath(e.target.value)}
+            onBlur={() => {
+              localStorage.setItem('lnf_cadpath_' + ent.id, path)
+              void carregar()
+            }}
+            className="flex-1 bg-zinc-900 border border-zinc-700 rounded px-2 py-1 text-xs font-mono focus:outline-none focus:border-green-500"
+          />
+        </div>
+      )}
 
       {carregando && <p className="text-zinc-400 text-sm">Carregando {ent.label.toLowerCase()}...</p>}
       {erro && (
@@ -741,6 +829,14 @@ export function Cadastros() {
               />
             </div>
 
+            {ent.id === 'centros' && (
+              <EmpresaSelect
+                value={form.data.Empresa}
+                opcoes={empresaOpcoes}
+                onChange={v => setCampo('Empresa', v)}
+              />
+            )}
+
             {ent.fields(entries).map(f => (
               <Campo
                 key={f.path}
@@ -749,6 +845,13 @@ export function Cadastros() {
                 onChange={v => setCampo(f.path, v)}
               />
             ))}
+
+            {ent.id === 'centros' && (
+              <ZebraEditor
+                value={form.data.ZebraCaminhos}
+                onChange={v => setCampo('ZebraCaminhos', v)}
+              />
+            )}
 
             {ent.id === 'centros' && form.data.FornOverrides != null && (
               <p className="text-[11px] text-zinc-500">
@@ -792,6 +895,161 @@ export function Cadastros() {
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+// ── Select de empresa do centro ──────────────────────────────────────────────
+// centros.empresa tem FK para empresas.codigo, então oferecer as cadastradas
+// (em vez de texto livre) evita erro de FK por digitação. Vazio = sem empresa
+// (o Coreon cai no padrão via empresaDoCentro). O valor atual sempre aparece,
+// mesmo que a lista não tenha carregado ou a empresa tenha sido removida.
+function EmpresaSelect({
+  value,
+  opcoes,
+  onChange,
+}: {
+  value: unknown
+  opcoes: Array<{ codigo: string; nome: string }>
+  onChange: (v: string) => void
+}) {
+  const atual = value == null ? '' : String(value)
+  const codigos = opcoes.map(o => o.codigo)
+  const extra =
+    atual && !codigos.includes(atual)
+      ? [{ codigo: atual, nome: atual + ' (não cadastrada)' }]
+      : []
+  return (
+    <div>
+      <label className="block text-[11px] uppercase tracking-wide text-zinc-500 mb-1">Empresa</label>
+      <select
+        value={atual}
+        onChange={e => onChange(e.target.value)}
+        className="w-full bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-green-500"
+      >
+        <option value="">(sem empresa — usa o padrão)</option>
+        {[...opcoes, ...extra].map(o => (
+          <option key={o.codigo} value={o.codigo}>
+            {o.nome ? `${o.nome} (${o.codigo})` : o.codigo}
+          </option>
+        ))}
+      </select>
+    </div>
+  )
+}
+
+// ── Editor de impressoras Zebra do centro ────────────────────────────────────
+// Gerencia a LISTA de impressoras (zebra_caminhos): nome, caminho, dpi e
+// escuridão. O sub-objeto 'layouts' de cada impressora (as coordenadas de ZPL
+// da etiqueta) é PRESERVADO no spread — quem desenha o layout é a tela de
+// etiquetas do Coreon; aqui se administra o parque de impressoras.
+function ZebraEditor({ value, onChange }: { value: unknown; onChange: (v: unknown) => void }) {
+  const lista = Array.isArray(value) ? (value as Data[]) : []
+
+  const patch = (i: number, campo: string, val: unknown) =>
+    onChange(lista.map((p, idx) => (idx === i ? { ...p, [campo]: val } : p)))
+  const remover = (i: number) => onChange(lista.filter((_, idx) => idx !== i))
+  const adicionar = () => onChange([...lista, { nome: '', caminho: '' }])
+
+  return (
+    <div className="border border-zinc-800 rounded-lg p-3 space-y-3">
+      <div className="flex items-center justify-between">
+        <span className="text-[11px] uppercase tracking-wide text-zinc-500">Impressoras Zebra</span>
+        <button
+          onClick={adicionar}
+          className="text-xs px-2 py-1 bg-zinc-800 hover:bg-zinc-700 rounded text-zinc-200 transition-colors"
+        >
+          + Impressora
+        </button>
+      </div>
+
+      {lista.length === 0 && (
+        <p className="text-xs text-zinc-600">Nenhuma impressora cadastrada neste centro.</p>
+      )}
+
+      {lista.map((p, i) => {
+        const temLayout =
+          p.layouts != null &&
+          typeof p.layouts === 'object' &&
+          Object.keys(p.layouts as Data).length > 0
+        return (
+          <div key={i} className="border border-zinc-800 rounded-lg p-2.5 space-y-2 bg-zinc-950/40">
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-zinc-500">#{i + 1}</span>
+              <button onClick={() => remover(i)} className="text-xs text-zinc-500 hover:text-red-300">
+                Remover
+              </button>
+            </div>
+            <MiniCampo label="Nome" value={p.nome} placeholder="Zebra 1" onChange={v => patch(i, 'nome', v)} />
+            <MiniCampo
+              label="Caminho / compartilhamento"
+              value={p.caminho}
+              placeholder="\\PC\Zebra1"
+              mono
+              onChange={v => patch(i, 'caminho', v)}
+            />
+            <div className="grid grid-cols-2 gap-2">
+              <MiniCampo
+                label="DPI (opcional)"
+                value={p.dpi}
+                type="number"
+                placeholder="203"
+                onChange={v => patch(i, 'dpi', v === '' ? undefined : Number(v))}
+              />
+              <MiniCampo
+                label="Escuridão −30..30"
+                value={p.escuridao}
+                type="number"
+                placeholder="0"
+                onChange={v => patch(i, 'escuridao', v === '' ? undefined : Number(v))}
+              />
+            </div>
+            {temLayout && (
+              <p className="text-[11px] text-zinc-600">
+                Layout de etiqueta configurado (preservado) — a posição dos campos é editada na tela
+                de etiquetas do Coreon.
+              </p>
+            )}
+          </div>
+        )
+      })}
+
+      <p className="text-[11px] text-zinc-600">
+        Nome e caminho identificam a impressora; o Coreon aceita uma impressora instalada ou um
+        compartilhamento <span className="font-mono">{'\\\\PC\\Zebra'}</span>. O layout de ZPL fica no
+        cadastro da impressora e é preservado ao salvar.
+      </p>
+    </div>
+  )
+}
+
+function MiniCampo({
+  label,
+  value,
+  onChange,
+  type = 'text',
+  placeholder,
+  mono,
+}: {
+  label: string
+  value: unknown
+  onChange: (v: string) => void
+  type?: string
+  placeholder?: string
+  mono?: boolean
+}) {
+  return (
+    <div>
+      <label className="block text-[10px] uppercase tracking-wide text-zinc-500 mb-0.5">{label}</label>
+      <input
+        type={type}
+        value={value == null ? '' : String(value)}
+        placeholder={placeholder}
+        onChange={e => onChange(e.target.value)}
+        className={`w-full bg-zinc-900 border border-zinc-700 rounded px-2 py-1.5 text-sm focus:outline-none focus:border-green-500 ${
+          mono ? 'font-mono' : ''
+        }`}
+      />
     </div>
   )
 }
