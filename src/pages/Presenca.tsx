@@ -1,7 +1,8 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useApp } from '../context/AppContext'
 import { SupabaseService } from '../services/supabase'
 import { carregarAtividade, desde, type Atividade, type AtividadeUsuario } from '../services/presenca'
+import { carregarRecusas, pareceAlmoxarifado, type Recusa } from '../services/recusas'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Presença — quem usa a ferramenta, quanto, e quem nunca usou
@@ -81,6 +82,135 @@ function csv(at: Atividade): string {
   return linhas.join('\r\n')
 }
 
+// Cada portão pede uma reação diferente, então cada um tem sua cor e sua
+// legenda. 'cadastro' é o único que é alarme — os outros são permissão faltando.
+const PORTOES: Record<string, { rotulo: string; cor: string; borda: string }> = {
+  cadastro: { rotulo: 'fora do cadastro', cor: 'text-red-300',   borda: 'border-red-900 bg-red-950/30' },
+  internet: { rotulo: 'MeuDanfe pago',    cor: 'text-amber-300', borda: 'border-amber-900/60 bg-amber-950/20' },
+  escrita:  { rotulo: 'escrita barrada',  cor: 'text-blue-300',  borda: 'border-blue-900/60 bg-blue-950/20' },
+}
+
+function PainelRecusas({
+  recusas,
+  carregando,
+  onRecarregar,
+}: {
+  recusas: Recusa[] | null
+  carregando: boolean
+  onRecarregar: () => void
+}) {
+  // Ordem por gravidade: intruso primeiro, depois permissão faltando.
+  const ordem = ['cadastro', 'internet', 'escrita']
+  const grupos = useMemo(() => {
+    const g: Record<string, Recusa[]> = { cadastro: [], internet: [], escrita: [] }
+    for (const r of recusas ?? []) (g[r.portao] ??= []).push(r)
+    return g
+  }, [recusas])
+
+  if (!recusas || recusas.length === 0) {
+    return (
+      <div className="border border-zinc-800 rounded p-3 flex items-center gap-2">
+        <span className="text-sm text-zinc-500">
+          {carregando ? 'Lendo recusas…' : 'Nenhuma tentativa de acesso negada registrada.'}
+        </span>
+        <button
+          onClick={onRecarregar}
+          disabled={carregando}
+          className="ml-auto text-xs text-zinc-400 hover:text-zinc-200 disabled:opacity-50"
+        >
+          ↻ atualizar
+        </button>
+      </div>
+    )
+  }
+
+  const intrusos = grupos.cadastro.length
+
+  return (
+    <div className="border border-zinc-800 rounded">
+      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 px-3 py-2 border-b border-zinc-800">
+        <h3 className="text-sm font-semibold">Tentativas de acesso negadas</h3>
+        {intrusos > 0 && (
+          <span className="text-xs text-red-300">
+            {intrusos} de fora do cadastro
+          </span>
+        )}
+        <button
+          onClick={onRecarregar}
+          disabled={carregando}
+          className="ml-auto text-xs text-zinc-400 hover:text-zinc-200 disabled:opacity-50"
+        >
+          {carregando ? 'atualizando…' : '↻ atualizar'}
+        </button>
+      </div>
+
+      <div className="p-2 space-y-3">
+        {ordem.filter((p) => grupos[p]?.length).map((p) => {
+          const meta = PORTOES[p] ?? { rotulo: p, cor: 'text-zinc-300', borda: 'border-zinc-800' }
+          return (
+            <div key={p} className="space-y-1">
+              {grupos[p].map((r) => {
+                const almox = p === 'cadastro' && pareceAlmoxarifado(r)
+                return (
+                  <div
+                    key={`${r.portao}:${r.usuario}`}
+                    className={`rounded border px-3 py-2 text-sm ${meta.borda}`}
+                  >
+                    <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                      <span className="font-mono">{r.usuario}</span>
+                      <span className={`text-[10px] px-1 rounded bg-zinc-900 ${meta.cor}`}>
+                        {meta.rotulo}
+                      </span>
+                      {almox && (
+                        <span className="text-[10px] px-1 rounded bg-green-900/50 text-green-300">
+                          almoxarifado?
+                        </span>
+                      )}
+                      <span className="ml-auto text-xs text-zinc-500">
+                        {r.total}× · última {desde(r.ultimaEm) ?? '—'}
+                      </span>
+                    </div>
+
+                    {/* Perfil do diretório — só o portão 'cadastro' tem. */}
+                    {p === 'cadastro' && (
+                      <div className="mt-1 text-xs">
+                        {r.nomeCompleto || r.cargo || r.setor ? (
+                          <span className="text-zinc-300">
+                            {r.nomeCompleto ?? '—'}
+                            {r.cargo && <span className="text-zinc-400"> · {r.cargo}</span>}
+                            {r.setor && <span className="text-zinc-400"> · {r.setor}</span>}
+                            {(r.cidade || r.estado) && (
+                              <span className="text-zinc-500">
+                                {' · '}{[r.cidade, r.estado].filter(Boolean).join('/')}
+                              </span>
+                            )}
+                          </span>
+                        ) : r.perfilStatus === 'nao_encontrado' ? (
+                          <span className="text-zinc-600">
+                            diretório não conhece {r.usuario}@grupofleury.com.br
+                          </span>
+                        ) : (
+                          <span className="text-zinc-600">perfil ainda não buscado</span>
+                        )}
+                      </div>
+                    )}
+
+                    {r.op && (
+                      <div className="mt-0.5 text-[11px] text-zinc-600 font-mono">
+                        {r.op}{r.motivo ? ` — ${r.motivo}` : ''}
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
 export function Presenca() {
   const { config } = useApp()
 
@@ -90,6 +220,29 @@ export function Presenca() {
   const [busca, setBusca] = useState('')
   const [soAtivos, setSoAtivos] = useState(false)
   const [aberto, setAberto] = useState<string | null>(null)
+
+  // As recusas são uma leitura barata (uma tabela pequena) e são o AVISO da
+  // tela — quem tentou entrar e não pôde. Por isso carregam sozinhas ao abrir,
+  // ao contrário da varredura do histórico, que espera o clique.
+  const [recusas, setRecusas] = useState<Recusa[] | null>(null)
+  const [carregandoRec, setCarregandoRec] = useState(false)
+
+  const carregarRec = useCallback(async () => {
+    if (!config) return
+    setCarregandoRec(true)
+    try {
+      const svc = new SupabaseService(config)
+      setRecusas(await carregarRecusas(svc))
+    } catch {
+      // Uma recusa que não carrega não pode esconder a presença: falha calada,
+      // o painel só não aparece.
+      setRecusas(null)
+    } finally {
+      setCarregandoRec(false)
+    }
+  }, [config])
+
+  useEffect(() => { void carregarRec() }, [carregarRec])
 
   const carregar = useCallback(async () => {
     if (!config) return
@@ -173,6 +326,12 @@ export function Presenca() {
           {erro}
         </div>
       )}
+
+      <PainelRecusas
+        recusas={recusas}
+        carregando={carregandoRec}
+        onRecarregar={() => void carregarRec()}
+      />
 
       {!at && !carregando && !erro && (
         <p className="text-sm text-zinc-500">
