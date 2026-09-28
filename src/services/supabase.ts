@@ -447,6 +447,41 @@ export class SupabaseService {
     return txt
   }
 
+  /**
+   * Diagnóstico do transporte ATUAL desta instância: um SELECT mínimo que
+   * exercita a cadeia inteira (browser → transporte → lnf-api → Supabase → volta).
+   * Para testar o Power Automate mesmo com a Edge Function ativa, construa uma
+   * instância só com `paUrl` (deixando `edgeUrl` vazia) e chame isto — ela usa o
+   * caminho do PA. A chamada entra no paLog como qualquer outra.
+   */
+  async diagnosticar(): Promise<{ ok: boolean; ms: number; transporte: string; detalhe: string }> {
+    const t0 = Date.now()
+    try {
+      const txt = await this.pa({
+        op: 'SELECT',
+        tabela: 'app_control',
+        query: 'select=id&limit=1',
+        usuario: this.usuario,
+      })
+      const ms = Date.now() - t0
+      let linhas = 0
+      try {
+        const arr = JSON.parse(txt)
+        if (Array.isArray(arr)) linhas = arr.length
+      } catch {
+        /* 2xx com corpo não-JSON: raro; pa() já teria lançado num erro de fato */
+      }
+      return {
+        ok: true,
+        ms,
+        transporte: this.transporte,
+        detalhe: `respondeu ${linhas} linha(s) em ${ms}ms`,
+      }
+    } catch (e) {
+      return { ok: false, ms: Date.now() - t0, transporte: this.transporte, detalhe: (e as Error).message }
+    }
+  }
+
   // SELECT via PA (op=SELECT), numa chamada só. O teto de linhas é controlado
   // pelo "Max rows" do Supabase (mantido alto o bastante pros dados). usuario
   // vai junto (o fluxo valida quem pode ler).
