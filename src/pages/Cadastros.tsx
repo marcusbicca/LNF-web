@@ -365,7 +365,8 @@ const ENTIDADES: EntityConfig[] = [
       FornOverrides: null,
     }),
     fields: () => [
-      { path: 'Empresa', label: 'Empresa (fleury / pardini)', type: 'text' },
+      // Empresa é renderizada como <select> (EmpresaSelect) no formulário, com
+      // as empresas cadastradas — a coluna tem FK, então texto livre erraria.
       { path: 'GenericLote', label: 'Generic Lote', type: 'text' },
       { path: 'GenericVal', label: 'Generic Val', type: 'text' },
       { path: 'GenericLoteItems', label: 'Generic Lote Items', type: 'list' },
@@ -454,6 +455,28 @@ export function Cadastros() {
 
   const [salvando, setSalvando] = useState(false)
   const [status, setStatus] = useState<string | null>(null)
+
+  // Empresas cadastradas — para o <select> de empresa do centro (a coluna tem
+  // FK, então oferecer as opções evita erro de FK por digitação).
+  const [empresaOpcoes, setEmpresaOpcoes] = useState<Array<{ codigo: string; nome: string }>>([])
+  useEffect(() => {
+    if (!svc) return
+    let vivo = true
+    svc
+      .lerLinhas('empresas', { select: 'codigo,nome', order: 'codigo' })
+      .then(rows => {
+        if (vivo)
+          setEmpresaOpcoes(
+            rows.map(r => ({ codigo: String(r.codigo ?? ''), nome: String(r.nome ?? '') })),
+          )
+      })
+      .catch(() => {
+        /* empresas pode não carregar; o select cai para o valor atual + vazio */
+      })
+    return () => {
+      vivo = false
+    }
+  }, [svc])
 
   // Solicitações de cadastro de fornecedor (tabela solicitacoes_forn, pendentes).
   const [solic, setSolic] = useState<Array<Record<string, unknown>>>([])
@@ -806,6 +829,14 @@ export function Cadastros() {
               />
             </div>
 
+            {ent.id === 'centros' && (
+              <EmpresaSelect
+                value={form.data.Empresa}
+                opcoes={empresaOpcoes}
+                onChange={v => setCampo('Empresa', v)}
+              />
+            )}
+
             {ent.fields(entries).map(f => (
               <Campo
                 key={f.path}
@@ -864,6 +895,45 @@ export function Cadastros() {
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+// ── Select de empresa do centro ──────────────────────────────────────────────
+// centros.empresa tem FK para empresas.codigo, então oferecer as cadastradas
+// (em vez de texto livre) evita erro de FK por digitação. Vazio = sem empresa
+// (o Coreon cai no padrão via empresaDoCentro). O valor atual sempre aparece,
+// mesmo que a lista não tenha carregado ou a empresa tenha sido removida.
+function EmpresaSelect({
+  value,
+  opcoes,
+  onChange,
+}: {
+  value: unknown
+  opcoes: Array<{ codigo: string; nome: string }>
+  onChange: (v: string) => void
+}) {
+  const atual = value == null ? '' : String(value)
+  const codigos = opcoes.map(o => o.codigo)
+  const extra =
+    atual && !codigos.includes(atual)
+      ? [{ codigo: atual, nome: atual + ' (não cadastrada)' }]
+      : []
+  return (
+    <div>
+      <label className="block text-[11px] uppercase tracking-wide text-zinc-500 mb-1">Empresa</label>
+      <select
+        value={atual}
+        onChange={e => onChange(e.target.value)}
+        className="w-full bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-green-500"
+      >
+        <option value="">(sem empresa — usa o padrão)</option>
+        {[...opcoes, ...extra].map(o => (
+          <option key={o.codigo} value={o.codigo}>
+            {o.nome ? `${o.nome} (${o.codigo})` : o.codigo}
+          </option>
+        ))}
+      </select>
     </div>
   )
 }
