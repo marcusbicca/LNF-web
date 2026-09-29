@@ -1,14 +1,18 @@
 import { useEffect, useState, type ReactNode } from 'react'
 
 export type Page =
+  | 'inicio'
   | 'lancamento'
   | 'mapeamento'
   | 'cadastros'
+  | 'controle'
   | 'tabelas'
   | 'solicitacoes'
   | 'respostas'
+  | 'coletas'
   | 'historico'
   | 'presenca'
+  | 'termos'
   | 'config'
 
 // ── as páginas viram DADO ────────────────────────────────────────────────────
@@ -18,14 +22,18 @@ export type Page =
 // lembrar de trocar as três ocorrências do nome — e agora há dois lugares que
 // desenham a mesma navegação (a barra e a gaveta), o que dobraria a cópia.
 const PAGINAS: Array<{ id: Page; rotulo: string }> = [
+  { id: 'inicio',       rotulo: 'Início' },
   { id: 'lancamento',   rotulo: 'Lançamento' },
   { id: 'mapeamento',   rotulo: 'Mapeamento' },
   { id: 'cadastros',    rotulo: 'Cadastros' },
+  { id: 'controle',     rotulo: 'Controle' },
   { id: 'tabelas',      rotulo: 'Tabelas' },
   { id: 'solicitacoes', rotulo: 'Solicitações' },
   { id: 'respostas',    rotulo: 'Respostas' },
+  { id: 'coletas',      rotulo: 'Coletas' },
   { id: 'historico',    rotulo: 'Histórico / Debug' },
   { id: 'presenca',     rotulo: 'Presença' },
+  { id: 'termos',       rotulo: 'Termos' },
   { id: 'config',       rotulo: 'Configurações' },
 ]
 
