@@ -6,6 +6,7 @@ export type Page =
   | 'lancamento'
   | 'mapeamento'
   | 'cadastros'
+  | 'materiais'
   | 'controle'
   | 'tabelas'
   | 'solicitacoes'
@@ -27,6 +28,7 @@ const PAGINAS: Array<{ id: Page; rotulo: string }> = [
   { id: 'lancamento',   rotulo: 'Lançamento' },
   { id: 'mapeamento',   rotulo: 'Mapeamento' },
   { id: 'cadastros',    rotulo: 'Cadastros' },
+  { id: 'materiais',    rotulo: 'Materiais' },
   { id: 'controle',     rotulo: 'Controle' },
   { id: 'tabelas',      rotulo: 'Tabelas' },
   { id: 'solicitacoes', rotulo: 'Solicitações' },

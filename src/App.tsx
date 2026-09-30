@@ -5,6 +5,7 @@ import { Inicio } from './pages/Inicio'
 import { Lancamento } from './pages/Lancamento'
 import { Mapeamento } from './pages/Mapeamento'
 import { Cadastros } from './pages/Cadastros'
+import { Materiais } from './pages/Materiais'
 import { Controle } from './pages/Controle'
 import { Tabelas } from './pages/Tabelas'
 import { Historico } from './pages/Historico'
@@ -62,6 +63,7 @@ export default function App() {
         {painel('lancamento', <Lancamento />)}
         {painel('mapeamento', <Mapeamento />)}
         {painel('cadastros', <Cadastros />)}
+        {painel('materiais', <Materiais />)}
         {painel('controle', <Controle />)}
         {painel('tabelas', <Tabelas />)}
         {painel('historico', <Historico />)}

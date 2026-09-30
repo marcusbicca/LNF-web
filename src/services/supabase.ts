@@ -894,6 +894,45 @@ export class SupabaseService {
     await this.del('usuarios', `username=eq.${encodeURIComponent(username)}`)
   }
 
+  // ── cadastro por material (edição direta de um item) ───────────────────────
+  //
+  // Diferente do itens.json em bloco (escreverArquivo, com diff): aqui é UMA
+  // linha por vez, como salvarUsuario. garantirFornecedores cobre a FK
+  // materiais→fornecedores; renomear o código apaga a linha antiga. Não mexe
+  // no snapshot de diff — esta via não passa por lerArquivo/escreverArquivo.
+  async nomesFornecedores(): Promise<string[]> {
+    const rows = await this.getAll('fornecedores', 'select=nome&order=nome')
+    return rows.map(r => String(r.nome ?? '')).filter(n => n !== '')
+  }
+
+  async lerMateriaisDoForn(fornecedor: string): Promise<Array<{ codigo: string; item: Row }>> {
+    const rows = await this.getAll(
+      'materiais',
+      `select=*&fornecedor=eq.${encodeURIComponent(fornecedor)}&order=codigo`,
+    )
+    return rows.map(r => ({ codigo: String(r.codigo ?? ''), item: materialRowToLegacy(r) }))
+  }
+
+  async salvarMaterial(
+    fornecedor: string, codigo: string, item: Row, codigoAntigo?: string,
+  ): Promise<void> {
+    await this.garantirFornecedores([fornecedor])
+    await this.upsert('materiais', [buildMaterialRow(fornecedor, codigo, item)], 'fornecedor,codigo')
+    if (codigoAntigo && codigoAntigo !== codigo) {
+      await this.del(
+        'materiais',
+        `fornecedor=eq.${encodeURIComponent(fornecedor)}&codigo=eq.${encodeURIComponent(codigoAntigo)}`,
+      )
+    }
+  }
+
+  async removerMaterial(fornecedor: string, codigo: string): Promise<void> {
+    await this.del(
+      'materiais',
+      `fornecedor=eq.${encodeURIComponent(fornecedor)}&codigo=eq.${encodeURIComponent(codigo)}`,
+    )
+  }
+
   // ── cadastros por entidade (centros) ───────────────────────────────────────
   async salvarCentro(centro: string, data: Row, centroAntigo?: string): Promise<void> {
     await this.upsert('centros', [buildCentroRow(centro, data)], 'centro')
