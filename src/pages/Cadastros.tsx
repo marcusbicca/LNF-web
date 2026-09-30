@@ -49,7 +49,11 @@ interface EntityConfig {
   parse?: (raw: unknown) => Entry[]
   load?: (svc: SupabaseService) => Promise<Entry[]>
   // Escrita por linha no Supabase. oldKey presente = rename (chave mudou).
-  save: (svc: SupabaseService, key: string, data: Data, oldKey?: string) => Promise<void>
+  // Usuários pode devolver { enfileirado } quando o cadastro NOVO, abaixo de
+  // dev, vira solicitação em vez de gravar — as demais entidades devolvem void.
+  save: (
+    svc: SupabaseService, key: string, data: Data, oldKey?: string,
+  ) => Promise<void | { enfileirado: boolean; mensagem: string }>
   remove: (svc: SupabaseService, key: string) => Promise<void>
   // Recebem as linhas JÁ CARREGADAS porque uma delas depende dos dados: os
   // acessos do usuário são a união do catálogo com o que existe no banco.
@@ -270,6 +274,10 @@ const ENTIDADES: EntityConfig[] = [
         brutos.map(([k, v]) => ({ key: k, data: v })),
       )
 
+      // 'ativo' só chega quando quem lê é dev — a lnf-api esconde a coluna de
+      // todo o resto. Presente em qualquer linha = a tela pode gerir o campo.
+      const ehDev = brutos.some(([, v]) => typeof v.ativo === 'boolean')
+
       return brutos.map(([k, v]) => ({
         key: k,
         data: {
@@ -277,6 +285,7 @@ const ENTIDADES: EntityConfig[] = [
           centros: asList(v.centros),
           acessos: { ...acessosVazio(chaves), ...((v.acessos as Record<string, boolean>) ?? {}) },
           nivelAdm: typeof v.nivelAdm === 'number' ? v.nivelAdm : 0,
+          ...(ehDev ? { ativo: v.ativo !== false } : {}),
         },
       }))
     },
@@ -291,6 +300,7 @@ const ENTIDADES: EntityConfig[] = [
           centros: asList(data.centros),
           acessos: (data.acessos as Record<string, boolean>) ?? {},
           nivelAdm: Number(data.nivelAdm) || 0,
+          ...(typeof data.ativo === 'boolean' ? { ativo: data.ativo } : {}),
         },
         oldKey,
       ),
@@ -300,10 +310,18 @@ const ENTIDADES: EntityConfig[] = [
       centros: [],
       acessos: acessosVazio(chavesDeAcesso(entries)),
       nivelAdm: 0,
+      // Novo usuário criado por um dev nasce ativo; abaixo de dev o campo nem
+      // aparece (e o cadastro vira solicitação, sem 'ativo').
+      ...(entries.some(e => typeof e.data.ativo === 'boolean') ? { ativo: true } : {}),
     }),
     fields: entries => [
       { path: 'nome', label: 'Nome', type: 'text' },
       { path: 'nivelAdm', label: 'Nível Adm', type: 'number' },
+      // 'Ativo' só aparece para o dev (quando 'ativo' veio na leitura). É o
+      // liga/desliga de acesso por tempo indeterminado, sem descadastrar.
+      ...(entries.some(e => typeof e.data.ativo === 'boolean')
+        ? [{ path: 'ativo', label: 'Ativo (acesso liberado)', type: 'boolean' as const }]
+        : []),
       { path: 'centros', label: 'Centros', type: 'list' },
       ...chavesDeAcesso(entries).map(a => ({
         path: `acessos.${a}`,
@@ -480,23 +498,28 @@ export function Cadastros() {
 
   // Solicitações de cadastro de fornecedor (tabela solicitacoes_forn, pendentes).
   const [solic, setSolic] = useState<Array<Record<string, unknown>>>([])
-  const [solicCnpj, setSolicCnpj] = useState<string | null>(null) // solicitação sendo atendida
+  const [solicCnpj, setSolicCnpj] = useState<string | null>(null) // solicitação (forn) sendo atendida
+  const [solicUser, setSolicUser] = useState<string | null>(null) // solicitação (usuário) sendo atendida
 
   const carregarSolic = useCallback(async () => {
-    if (!svc || entId !== 'fornecedores') {
+    const tabela =
+      entId === 'fornecedores' ? 'solicitacoes_forn'
+      : entId === 'usuarios' ? 'solicitacoes_usuario'
+      : null
+    if (!svc || !tabela) {
       setSolic([])
       return
     }
     try {
       setSolic(
-        await svc.lerLinhas('solicitacoes_forn', {
+        await svc.lerLinhas(tabela, {
           filtros: 'status=eq.pendente',
           order: 'created_at.desc',
           limit: 200,
         }),
       )
     } catch {
-      setSolic([]) // tabela pode não existir ainda — silencioso
+      setSolic([]) // tabela pode não existir / sem permissão — silencioso
     }
   }, [svc, entId])
 
@@ -541,11 +564,20 @@ export function Cadastros() {
     return [...arr].sort((a, b) => a.key.localeCompare(b.key))
   }, [entries, filtro])
 
+  // Dev = a leitura de 'usuarios' trouxe a coluna 'ativo' (a lnf-api só a envia
+  // ao dev). É o que libera o painel de solicitações de cadastro e o campo
+  // 'ativo' — sem depender de o web conhecer o nível do usuário configurado.
+  const ehDevUsuarios = useMemo(
+    () => entId === 'usuarios' && entries.some(e => typeof e.data.ativo === 'boolean'),
+    [entId, entries],
+  )
+
   function selecionar(e: Entry) {
     setSelKey(e.key)
     setForm({ key: e.key, data: JSON.parse(JSON.stringify(e.data)) as Data })
     setStatus(null)
     setSolicCnpj(null)
+    setSolicUser(null)
   }
 
   function novo() {
@@ -553,6 +585,7 @@ export function Cadastros() {
     setForm({ key: '', data: ent.blank(entries) })
     setStatus(null)
     setSolicCnpj(null)
+    setSolicUser(null)
   }
 
   // "Cadastrar" a partir de uma solicitação: pré-preenche o nome como chave e
@@ -563,6 +596,29 @@ export function Cadastros() {
   // a linha com apenas esse CNPJ e o resto em branco — apagando as demais
   // filiais e toda a configuração de processamento do fornecedor.
   function cadastrarDeSolic(sol: Record<string, unknown>) {
+    // Usuário: pré-preenche o formulário com o pedido; ao salvar (como dev), o
+    // usuário é criado de fato e a solicitação é marcada 'aprovada'.
+    if (entId === 'usuarios') {
+      const username = String(sol.username ?? '').trim()
+      const existente = entries.find(e => e.key.trim().toLowerCase() === username.toLowerCase())
+      const data: Data = {
+        nome: String(sol.nome ?? ''),
+        centros: asList(sol.centros),
+        nivelAdm: Number(sol.nivel_adm) || 0,
+        acessos: {
+          ...acessosVazio(chavesDeAcesso(entries)),
+          ...((sol.acessos as Record<string, boolean>) ?? {}),
+        },
+        ativo: true,
+      }
+      setSelKey(existente ? existente.key : null)
+      setForm({ key: username, data: existente ? { ...existente.data, ...data } : data })
+      setSolicUser(username || null)
+      setSolicCnpj(null)
+      setStatus('ℹ️ Revise e salve para liberar o acesso deste usuário.')
+      return
+    }
+
     const cnpj = String(sol.cnpj ?? '')
     const nome = String(sol.nome ?? '').trim()
 
@@ -585,10 +641,16 @@ export function Cadastros() {
 
   async function ignorarSolic(sol: Record<string, unknown>) {
     if (!svc) return
-    const cnpj = String(sol.cnpj ?? '')
-    if (!cnpj) return
     try {
-      await svc.salvarLinha('solicitacoes_forn', { cnpj, status: 'ignorado' }, 'cnpj')
+      if (entId === 'usuarios') {
+        const username = String(sol.username ?? '').trim()
+        if (!username) return
+        await svc.salvarLinha('solicitacoes_usuario', { username, status: 'recusada' }, 'username')
+      } else {
+        const cnpj = String(sol.cnpj ?? '')
+        if (!cnpj) return
+        await svc.salvarLinha('solicitacoes_forn', { cnpj, status: 'ignorado' }, 'cnpj')
+      }
       await carregarSolic()
     } catch (e) {
       setStatus(`❌ ${(e as Error).message}`)
@@ -644,16 +706,35 @@ export function Cadastros() {
     try {
       const oldKey = selKey && selKey !== key ? selKey : undefined
       const dados = fundirSeExistente(key, form.data)
-      await ent.save(svc, key, dados, oldKey)
+      const resultado = await ent.save(svc, key, dados, oldKey)
+
+      // Cadastro de usuário NOVO abaixo de dev não gravou — virou solicitação.
+      // Mostra a mensagem e não anuncia "salvo": o acesso ainda não existe.
+      if (resultado && typeof resultado === 'object' && resultado.enfileirado) {
+        setStatus(`📨 ${resultado.mensagem}`)
+        return
+      }
+
       setEntries(aplicarLocal(key, dados))
       setSelKey(key)
       setStatus(`✅ "${key}" salvo com sucesso`)
 
-      // Se veio de uma solicitação de cadastro, marca como concluída.
+      // Se veio de uma solicitação de cadastro, marca como concluída/aprovada.
       if (entId === 'fornecedores' && solicCnpj) {
         try {
           await svc.salvarLinha('solicitacoes_forn', { cnpj: solicCnpj, status: 'cadastrado' }, 'cnpj')
           setSolicCnpj(null)
+          await carregarSolic()
+        } catch {
+          /* não bloqueia o sucesso do cadastro */
+        }
+      }
+      if (entId === 'usuarios' && solicUser) {
+        try {
+          await svc.salvarLinha(
+            'solicitacoes_usuario', { username: solicUser, status: 'aprovada' }, 'username',
+          )
+          setSolicUser(null)
           await carregarSolic()
         } catch {
           /* não bloqueia o sucesso do cadastro */
@@ -771,6 +852,40 @@ export function Cadastros() {
                   className="px-2.5 py-1 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-300 rounded text-xs transition-colors"
                 >
                   Ignorar
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Solicitações de cadastro de usuário (pendentes) — só o dev enxerga */}
+      {entId === 'usuarios' && ehDevUsuarios && solic.length > 0 && (
+        <div className="border border-amber-800/60 bg-amber-950/30 rounded-lg p-3 space-y-2">
+          <p className="text-xs font-medium text-amber-300">
+            {solic.length} solicitação(ões) de cadastro de usuário
+          </p>
+          <div className="divide-y divide-amber-900/40 max-h-56 overflow-y-auto">
+            {solic.map(s => (
+              <div key={String(s.username)} className="flex items-center gap-2 py-2 text-sm">
+                <div className="min-w-0 flex-1">
+                  <p className="text-zinc-100 truncate">{String(s.username || '(sem usuário)')}</p>
+                  <p className="text-xs text-zinc-500">
+                    {String(s.nome || '(sem nome)')} · nível {Number(s.nivel_adm) || 0}
+                    {s.solicitante ? ` · pedido por ${String(s.solicitante)}` : ''}
+                  </p>
+                </div>
+                <button
+                  onClick={() => cadastrarDeSolic(s)}
+                  className="px-2.5 py-1 bg-green-700 hover:bg-green-600 text-white rounded text-xs font-medium transition-colors"
+                >
+                  Aprovar
+                </button>
+                <button
+                  onClick={() => void ignorarSolic(s)}
+                  className="px-2.5 py-1 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-300 rounded text-xs transition-colors"
+                >
+                  Recusar
                 </button>
               </div>
             ))}
