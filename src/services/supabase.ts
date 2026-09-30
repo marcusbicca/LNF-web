@@ -178,6 +178,11 @@ export function buildUsuarioRow(username: string, u: Row): Row {
     centros: arr(u.centros),
     nivel_adm: numOr0(u.nivelAdm),
     acessos: obj(u.acessos),
+    // 'ativo' só entra quando a tela o carrega (dev): a lnf-api esconde a
+    // coluna de todo o resto, então um não-dev nunca tem esse campo para
+    // enviar — e mesmo que enviasse, a função recusa. Ausente = o upsert
+    // preserva o valor atual (só toca as colunas presentes no corpo).
+    ...(typeof u.ativo === 'boolean' ? { ativo: u.ativo } : {}),
   }
 }
 
@@ -246,12 +251,17 @@ function centroRowToLegacy(r: Row): Row {
 }
 
 function usuarioRowToLegacy(r: Row): Row {
-  return {
+  const base: Row = {
     nome: String(r.nome ?? ''),
     centros: arr(r.centros),
     nivelAdm: numOr0(r.nivel_adm),
     acessos: obj(r.acessos),
   }
+  // 'ativo' só chega quando quem lê é dev — a lnf-api remove a coluna da
+  // resposta para todo o resto. A presença dela É o sinal de que a tela pode
+  // gerir o campo; ausente, o Cadastros nem mostra o controle.
+  if (typeof r.ativo === 'boolean') base.ativo = r.ativo
+  return base
 }
 
 // ── mapa arquivo → tabela ────────────────────────────────────────────────────
@@ -851,13 +861,76 @@ export class SupabaseService {
   }
 
   // ── cadastros por entidade (usuários) ──────────────────────────────────────
-  async salvarUsuario(username: string, data: Row, usernameAntigo?: string): Promise<void> {
-    await this.upsert('usuarios', [buildUsuarioRow(username, data)], 'username')
+  async salvarUsuario(
+    username: string, data: Row, usernameAntigo?: string,
+  ): Promise<{ enfileirado: boolean; mensagem: string }> {
+    // Chamada direta (não via upsert) para ler o corpo da resposta: abaixo de
+    // dev, cadastro NOVO volta 202 { enfileirado, mensagem } em vez de gravar.
+    const txt = await this.pa({
+      op: 'UPSERT',
+      tabela: 'usuarios',
+      linhas: [buildUsuarioRow(username, data)],
+      conflito: 'username',
+      usuario: this.usuario,
+    })
+    this.invalidarCache('usuarios')
     if (usernameAntigo && usernameAntigo !== username) await this.removerUsuario(usernameAntigo)
+
+    try {
+      const j = JSON.parse(txt) as Record<string, unknown>
+      if (j && typeof j === 'object' && j.enfileirado === true) {
+        return {
+          enfileirado: true,
+          mensagem: String(j.mensagem ?? 'Cadastro enviado para aprovação.'),
+        }
+      }
+    } catch {
+      /* corpo vazio (204) ou não-JSON = escrita normal */
+    }
+    return { enfileirado: false, mensagem: '' }
   }
 
   async removerUsuario(username: string): Promise<void> {
     await this.del('usuarios', `username=eq.${encodeURIComponent(username)}`)
+  }
+
+  // ── cadastro por material (edição direta de um item) ───────────────────────
+  //
+  // Diferente do itens.json em bloco (escreverArquivo, com diff): aqui é UMA
+  // linha por vez, como salvarUsuario. garantirFornecedores cobre a FK
+  // materiais→fornecedores; renomear o código apaga a linha antiga. Não mexe
+  // no snapshot de diff — esta via não passa por lerArquivo/escreverArquivo.
+  async nomesFornecedores(): Promise<string[]> {
+    const rows = await this.getAll('fornecedores', 'select=nome&order=nome')
+    return rows.map(r => String(r.nome ?? '')).filter(n => n !== '')
+  }
+
+  async lerMateriaisDoForn(fornecedor: string): Promise<Array<{ codigo: string; item: Row }>> {
+    const rows = await this.getAll(
+      'materiais',
+      `select=*&fornecedor=eq.${encodeURIComponent(fornecedor)}&order=codigo`,
+    )
+    return rows.map(r => ({ codigo: String(r.codigo ?? ''), item: materialRowToLegacy(r) }))
+  }
+
+  async salvarMaterial(
+    fornecedor: string, codigo: string, item: Row, codigoAntigo?: string,
+  ): Promise<void> {
+    await this.garantirFornecedores([fornecedor])
+    await this.upsert('materiais', [buildMaterialRow(fornecedor, codigo, item)], 'fornecedor,codigo')
+    if (codigoAntigo && codigoAntigo !== codigo) {
+      await this.del(
+        'materiais',
+        `fornecedor=eq.${encodeURIComponent(fornecedor)}&codigo=eq.${encodeURIComponent(codigoAntigo)}`,
+      )
+    }
+  }
+
+  async removerMaterial(fornecedor: string, codigo: string): Promise<void> {
+    await this.del(
+      'materiais',
+      `fornecedor=eq.${encodeURIComponent(fornecedor)}&codigo=eq.${encodeURIComponent(codigo)}`,
+    )
   }
 
   // ── cadastros por entidade (centros) ───────────────────────────────────────

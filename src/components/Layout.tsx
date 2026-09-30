@@ -1,10 +1,12 @@
 import { useEffect, useState, type ReactNode } from 'react'
+import pkg from '../../package.json'
 
 export type Page =
   | 'inicio'
   | 'lancamento'
   | 'mapeamento'
   | 'cadastros'
+  | 'materiais'
   | 'controle'
   | 'tabelas'
   | 'solicitacoes'
@@ -26,6 +28,7 @@ const PAGINAS: Array<{ id: Page; rotulo: string }> = [
   { id: 'lancamento',   rotulo: 'Lançamento' },
   { id: 'mapeamento',   rotulo: 'Mapeamento' },
   { id: 'cadastros',    rotulo: 'Cadastros' },
+  { id: 'materiais',    rotulo: 'Materiais' },
   { id: 'controle',     rotulo: 'Controle' },
   { id: 'tabelas',      rotulo: 'Tabelas' },
   { id: 'solicitacoes', rotulo: 'Solicitações' },
@@ -90,7 +93,8 @@ export function Layout({ page, onNavigate, children }: LayoutProps) {
         </button>
 
         <span className="text-lg font-bold tracking-wide">LNF Web</span>
-        <span className="text-xs text-zinc-500 font-mono">v0.1</span>
+        {/* Lê a versão do package.json — fonte única, para não congelar de novo. */}
+        <span className="text-xs text-zinc-500 font-mono">v{pkg.version}</span>
 
         {/* No celular a barra de baixo some, e com ela o rótulo do lugar onde
             se está. Sem isto, a tela perde o próprio nome. */}
