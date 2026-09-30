@@ -1089,6 +1089,7 @@ export function Mapeamento() {
         <div className="bg-zinc-900 border border-zinc-700 rounded-lg p-3 space-y-3">
           <div className="space-y-2">
             <CampoRO label="Descrição" valor={cb2Sel.descricao} />
+            <CampoRO label="Chave NF" valor={cb1Sel.nfChave} mono />
             <div className="grid grid-cols-2 gap-2">
               <CampoRO label="Código (pedido)" valor={cb2Sel.codigo} mono />
               <CampoRO label="Referência (NF)" valor={cb1Sel.referencia} mono />
