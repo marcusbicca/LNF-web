@@ -18,13 +18,14 @@ import {
 // nada do banco do LNF e funciona mesmo sem a conexão do LNF configurada.
 // ─────────────────────────────────────────────────────────────────────────────
 
-type Sub = 'computadores' | 'acessos' | 'genericos' | 'senhas' | 'registros'
+type Sub = 'computadores' | 'acessos' | 'genericos' | 'senhas' | 'versoes' | 'registros'
 
 const SUBS: Array<{ id: Sub; rotulo: string }> = [
   { id: 'computadores', rotulo: 'Computadores' },
   { id: 'acessos', rotulo: 'Acessos' },
   { id: 'genericos', rotulo: 'Logins genéricos' },
   { id: 'senhas', rotulo: 'Senhas' },
+  { id: 'versoes', rotulo: 'Versões' },
   { id: 'registros', rotulo: 'Registros' },
 ]
 
@@ -112,6 +113,10 @@ export function Foton() {
           <Numero rotulo="liberações 24h" valor={resumo.liberacoes_24h} />
           <Numero rotulo="recusas 24h" valor={resumo.recusas_24h} alerta={resumo.recusas_24h > 0} />
           <Numero rotulo="bloqueados" valor={resumo.bloqueados} />
+          <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-3">
+            <div className="text-sm font-mono truncate" title={resumo.versao_liberada ?? ''}>{resumo.versao_liberada ?? '—'}</div>
+            <div className="text-xs text-zinc-500">versão liberada</div>
+          </div>
         </div>
       )}
 
@@ -140,6 +145,7 @@ export function Foton() {
           {sub === 'acessos' && <Acessos linhas={linhas} api={api} agir={agir} />}
           {sub === 'genericos' && <Genericos linhas={linhas} api={api} agir={agir} />}
           {sub === 'senhas' && <Senhas linhas={linhas} api={api} agir={agir} />}
+          {sub === 'versoes' && <Versoes linhas={linhas} api={api} agir={agir} />}
           {sub === 'registros' && <Registros linhas={linhas} />}
         </>
       )}
@@ -478,6 +484,9 @@ const RESULTADO: Record<string, string> = {
   pc_bloqueado: '⛔ computador bloqueado',
   pc_pendente: '⏳ computador aguardando aprovação',
   admin_chave_invalida: '⚠️ admin: chave errada',
+  publicar_chave_invalida: '⚠️ CI: chave de publicação errada',
+  'admin:publicar': '📦 versão publicada pelo CI',
+  'admin:liberar_versao': '🚀 versão liberada',
 }
 
 function Registros({ linhas }: { linhas: Linha[] }) {
@@ -521,6 +530,94 @@ function Campo({ rotulo, children }: { rotulo: string; children: ReactNode }) {
       <span className="text-xs text-zinc-400">{rotulo}</span>
       {children}
     </label>
+  )
+}
+
+// ── Versões ──────────────────────────────────────────────────────────────────
+//
+// O CI publica cada build como "disponível" (função foton-publicar). Liberar faz
+// todo Fóton baixar e rodar essa versão na próxima abertura. Se a versão exigir
+// casca nova (Foton.exe), cada um copia da pasta da rede definida aqui.
+
+function Versoes({ linhas, api, agir }: PropsLista) {
+  const [origem, setOrigem] = useState<string | null>(null)
+  useEffect(() => {
+    api.listar('ajustes').then(
+      (a) => setOrigem(String(a.find((l) => l.chave === 'casca_origem')?.valor ?? '')),
+      () => setOrigem(''),
+    )
+  }, [api])
+  const liberada = linhas.find((l) => l.situacao === 'liberada')
+  const tamanho = (n: unknown) => `${(Number(n) / 1024).toFixed(0)} KB`
+
+  return (
+    <div className="space-y-3">
+      <Cartao>
+        <p className="text-sm font-medium">Pasta da rede com o Foton.exe da versão liberada</p>
+        <p className="text-xs text-zinc-400">
+          Só é usada quando uma versão exige casca nova (biblioteca nova, .NET novo): o Fóton de cada um copia o
+          Foton.exe e as DLLs dessa pasta, confere com os hashes da versão e reabre. Coloque lá o build da versão liberada.
+        </p>
+        <div className="flex gap-2">
+          <input value={origem ?? ''} disabled={origem === null} placeholder="\\servidor\Fóton"
+            onChange={(e) => setOrigem(e.target.value)} className="input flex-1 font-mono text-xs" />
+          <BotaoPequeno disabled={origem === null}
+            onClick={() => void agir(() => api.salvar('ajustes', { chave: 'casca_origem', valor: (origem ?? '').trim() }), 'Pasta salva.')}>
+            Salvar
+          </BotaoPequeno>
+        </div>
+      </Cartao>
+
+      <Cartao>
+        <div className="flex flex-wrap items-center gap-2 text-sm">
+          <span>Liberada:</span>
+          <span className="font-mono">{liberada ? String(liberada.versao) : 'nenhuma (cada um roda a do próprio Foton.exe)'}</span>
+          {!!liberada && (
+            <span className="ml-auto">
+              <BotaoPequeno perigo
+                onClick={() => confirm('Desligar a atualização? Cada Fóton volta a rodar a versão do próprio executável.') &&
+                  void agir(() => api.liberarVersao(null), 'Nenhuma versão liberada.')}>
+                Desligar
+              </BotaoPequeno>
+            </span>
+          )}
+        </div>
+      </Cartao>
+
+      {linhas.length === 0 && <Vazio>Nenhuma versão publicada. O CI publica cada build quando os segredos FOTON_CHAVE_MESTRA e FOTON_PUBLICAR estão no GitHub.</Vazio>}
+      {linhas.map((l) => (
+        <Cartao key={String(l.versao)} alerta={false}>
+          <div className="flex flex-wrap items-center gap-2 text-sm">
+            <span className="font-mono">{String(l.versao)}</span>
+            {l.situacao === 'liberada'
+              ? <span className="ml-auto text-xs text-green-400">liberada</span>
+              : <span className="ml-auto text-xs text-zinc-500">disponível</span>}
+          </div>
+          <div className="flex flex-wrap gap-x-4 text-xs text-zinc-500">
+            <span>{fmt(l.publicado_em)}</span>
+            {!!l.branch && <span>branch {String(l.branch)}</span>}
+            {!!l.commit && <span className="font-mono">{String(l.commit).slice(0, 7)}</span>}
+            <span>{tamanho(l.pacote_tamanho)}</span>
+            <span>casca nível {String(l.nivel_casca)}</span>
+            {!!l.liberado_em && <span>liberada em {fmt(l.liberado_em)}</span>}
+          </div>
+          {l.situacao !== 'liberada' && (
+            <div className="flex flex-wrap gap-2">
+              <BotaoPequeno
+                onClick={() => confirm(`Liberar ${String(l.versao)} para todos? Cada Fóton baixa e roda esta versão na próxima abertura.`) &&
+                  void agir(() => api.liberarVersao(String(l.versao)), `Versão ${String(l.versao)} liberada.`)}>
+                Liberar para todos
+              </BotaoPequeno>
+              <BotaoPequeno perigo
+                onClick={() => confirm(`Excluir a versão ${String(l.versao)}?`) &&
+                  void agir(() => api.excluir('versoes', l.versao), 'Versão excluída.')}>
+                Excluir
+              </BotaoPequeno>
+            </div>
+          )}
+        </Cartao>
+      ))}
+    </div>
   )
 }
 
