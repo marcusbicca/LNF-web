@@ -304,6 +304,9 @@ function Acessos({ linhas, api, agir }: PropsLista) {
           <div className="flex flex-wrap gap-x-4 text-xs text-zinc-500">
             <span>{String(l.validade_dias)} dias sem internet</span>
             {!!l.admin && <span className="text-green-400">administrador</span>}
+            {!!l.usuario && (l.tem_senha
+              ? <span className="text-green-400">tem senha pessoal</span>
+              : <span>sem senha pessoal</span>)}
             {!!l.exige_aprovacao && <span className="text-amber-400">aprova computador novo</span>}
             {!!l.expira_em && <span>até {fmt(l.expira_em)}</span>}
             <span>origem {String(l.origem ?? '')}</span>
@@ -318,6 +321,7 @@ function Acessos({ linhas, api, agir }: PropsLista) {
               'Atualizado.')}>
               {l.exige_aprovacao ? 'Não exigir aprovação' : 'Exigir aprovação de PC'}
             </BotaoPequeno>
+            {!!l.usuario && <SenhaPessoal usuario={String(l.usuario)} tem={!!l.tem_senha} api={api} agir={agir} />}
             {!!l.usuario && (
               <BotaoPequeno onClick={() => void agir(() => api.salvar('acessos', { id: l.id, admin: !l.admin }),
                 l.admin ? 'Deixou de ser administrador.' : 'Agora é administrador (vale na próxima abertura do Fóton).')}>
@@ -346,8 +350,8 @@ function Genericos({ linhas, api, agir }: PropsLista) {
     <div className="space-y-3">
       <Cartao>
         <p className="text-xs text-zinc-400">
-          Logins do Windows compartilhados (ex.: Tecnova): sempre pedem a senha de liberação, que vale por alguns dias naquele
-          computador. Nunca entram direto, mesmo com o tenant liberado.
+          Logins do Windows compartilhados (ex.: Tecnova): a pessoa sempre se identifica com o usuário dela e a senha pessoal
+          (defina em Acessos). Vale por alguns dias naquele computador. Nunca entram direto, mesmo com o tenant liberado.
         </p>
         <div className="grid grid-cols-[1fr_6rem_auto] gap-2 items-end">
           <Campo rotulo="Login">
@@ -403,8 +407,8 @@ function Senhas({ linhas, api, agir }: PropsLista) {
       <Cartao>
         <p className="text-sm font-medium">Nova senha de liberação</p>
         <p className="text-xs text-zinc-400">
-          Quem não está liberado digita a senha: usuário com nome próprio fica liberado dali em diante; login genérico
-          libera aquele computador por alguns dias. A senha é guardada só como hash e não aparece mais depois.
+          Quem tem login próprio no Windows e ainda não está liberado digita esta senha e fica liberado dali em diante.
+          Não vale para login genérico (lá é usuário + senha pessoal). A senha é guardada só como hash e não aparece mais depois.
         </p>
         <div className="grid sm:grid-cols-3 gap-2">
           <Campo rotulo="Descrição">
@@ -467,7 +471,7 @@ function Senhas({ linhas, api, agir }: PropsLista) {
 const RESULTADO: Record<string, string> = {
   liberado: '✅ liberado',
   nao_cadastrado: '🔒 não cadastrado',
-  generico: '🔒 login genérico (pediu senha)',
+  generico: '🔒 login genérico (pediu usuário e senha)',
   senha_invalida: '❌ senha errada',
   muitas_tentativas: '⛔ muitas tentativas',
   bloqueado: '⛔ usuário bloqueado',
@@ -491,6 +495,7 @@ function Registros({ linhas }: { linhas: Linha[] }) {
             <span className="w-56 shrink-0">{RESULTADO[String(l.resultado)] ?? String(l.resultado)}</span>
             <span className="text-zinc-300">
               {String(l.dominio ? `${String(l.dominio)}\\` : '')}{String(l.usuario ?? '')}
+              {!!l.pessoa && <span className="text-green-400"> → {String(l.pessoa)}</span>}
             </span>
             <span className="text-zinc-400">{String(l.maquina ?? '')}</span>
             {!!l.versao && <span className="text-zinc-500">v{String(l.versao)}</span>}
@@ -516,6 +521,38 @@ function Campo({ rotulo, children }: { rotulo: string; children: ReactNode }) {
       <span className="text-xs text-zinc-400">{rotulo}</span>
       {children}
     </label>
+  )
+}
+
+// Senha pessoal: quem usa um login genérico do Windows (ex.: "Tecnova") se identifica com usuário + esta senha.
+function SenhaPessoal({ usuario, tem, api, agir }: { usuario: string; tem: boolean } & Omit<PropsLista, 'linhas'>) {
+  const [aberto, setAberto] = useState(false)
+  const [senha, setSenha] = useState('')
+  if (!aberto)
+    return (
+      <BotaoPequeno onClick={() => setAberto(true)}>{tem ? 'Trocar senha pessoal' : 'Definir senha pessoal'}</BotaoPequeno>
+    )
+  const fechar = () => {
+    setAberto(false)
+    setSenha('')
+  }
+  return (
+    <span className="flex flex-wrap items-center gap-2">
+      <input type="password" autoComplete="new-password" placeholder="nova senha (mín. 8)" value={senha}
+        onChange={(e) => setSenha(e.target.value)} className="input !w-48 !py-1 text-xs" />
+      <BotaoPequeno disabled={senha.length < 8}
+        onClick={() => void agir(() => api.senhaPessoal(usuario, senha), `Senha pessoal de ${usuario} definida.`).then(fechar)}>
+        Salvar
+      </BotaoPequeno>
+      {tem && (
+        <BotaoPequeno perigo
+          onClick={() => confirm(`Remover a senha pessoal de ${usuario}? Ele não entra mais por login genérico.`) &&
+            void agir(() => api.senhaPessoal(usuario, null), 'Senha pessoal removida.').then(fechar)}>
+          Remover
+        </BotaoPequeno>
+      )}
+      <BotaoPequeno onClick={fechar}>Cancelar</BotaoPequeno>
+    </span>
   )
 }
 

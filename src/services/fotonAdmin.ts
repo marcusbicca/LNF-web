@@ -93,6 +93,11 @@ export class FotonAdmin {
     return this.chamar<{ ok: boolean }>({ op: 'excluir', tabela, id })
   }
 
+  /** Senha pessoal do usuário (para se identificar em login genérico, ex.: "Tecnova"). null = remover. */
+  senhaPessoal(usuario: string, senha: string | null) {
+    return this.chamar<{ acessos: number }>({ op: 'senha_pessoal', usuario, senha })
+  }
+
   novaSenha(descricao: string, senha: string, tenant?: string) {
     return this.chamar<{ id: number }>({ op: 'nova_senha', descricao, senha, tenant: tenant || null })
   }
