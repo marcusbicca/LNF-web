@@ -40,6 +40,11 @@ interface FormMaterial {
   aliases: AliasRow[]
 }
 
+const inp =
+  'w-full bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-2 text-sm ' +
+  'focus:outline-none focus:border-green-500 disabled:opacity-40'
+const lbl = 'block text-[11px] uppercase tracking-wide text-zinc-500 mb-1'
+
 function parseNum(s: string): number {
   const r = Number(String(s).replace(',', '.'))
   return Number.isFinite(r) ? r : 0
@@ -96,10 +101,6 @@ const formVazio: FormMaterial = {
   aliases: [],
 }
 
-const inputCls =
-  'bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-sm text-zinc-100 ' +
-  'focus:outline-none focus:border-zinc-500'
-
 export function Materiais() {
   const { config } = useApp()
   const svc = useMemo(() => (config ? new SupabaseService(config) : null), [config])
@@ -112,22 +113,18 @@ export function Materiais() {
 
   const [filtro, setFiltro] = useState('')
   const [selCodigo, setSelCodigo] = useState<string | null>(null)
+  const [editando, setEditando] = useState(false)
   const [form, setForm] = useState<FormMaterial>(formVazio)
   const [salvando, setSalvando] = useState(false)
   const [status, setStatus] = useState<string | null>(null)
 
-  // Lista de fornecedores para o seletor (uma vez).
   useEffect(() => {
     if (!svc) return
     let vivo = true
     svc
       .nomesFornecedores()
-      .then(ns => {
-        if (vivo) setFornecedores(ns)
-      })
-      .catch(() => {
-        if (vivo) setFornecedores([])
-      })
+      .then(ns => vivo && setFornecedores(ns))
+      .catch(() => vivo && setFornecedores([]))
     return () => {
       vivo = false
     }
@@ -153,6 +150,7 @@ export function Materiais() {
   useEffect(() => {
     void carregarItens()
     setSelCodigo(null)
+    setEditando(false)
     setForm(formVazio)
     setStatus(null)
     setFiltro('')
@@ -160,29 +158,28 @@ export function Materiais() {
 
   const filtrados = useMemo(() => {
     const f = filtro.trim().toLowerCase()
-    const arr = f
-      ? itens.filter(
-          i =>
-            i.codigo.toLowerCase().includes(f) ||
-            String(i.item.descricao ?? '').toLowerCase().includes(f),
-        )
-      : itens
-    return arr
+    if (!f) return itens
+    return itens.filter(
+      i =>
+        i.codigo.toLowerCase().includes(f) ||
+        String(i.item.descricao ?? '').toLowerCase().includes(f),
+    )
   }, [itens, filtro])
 
   function selecionar(codigo: string, item: Row) {
     setSelCodigo(codigo)
     setForm(itemToForm(codigo, item))
+    setEditando(true)
     setStatus(null)
   }
-
   function novo() {
     setSelCodigo(null)
     setForm(formVazio)
+    setEditando(true)
     setStatus(null)
   }
 
-  // ── edição das referências / conversões / aliases ──────────────────────────
+  // ── referências / conversões / aliases ─────────────────────────────────────
   function setRef(i: number, patch: Partial<RefBloco>) {
     setForm(f => ({ ...f, refs: f.refs.map((r, k) => (k === i ? { ...r, ...patch } : r)) }))
   }
@@ -236,7 +233,7 @@ export function Materiais() {
     try {
       const codigoAntigo = selCodigo && selCodigo !== codigo ? selCodigo : undefined
       await svc.salvarMaterial(forn, codigo, formToItem(form), codigoAntigo)
-      setStatus(`✅ "${codigo}" salvo`)
+      setStatus(`✅ "${codigo}" salvo com sucesso`)
       await carregarItens()
       setSelCodigo(codigo)
     } catch (e) {
@@ -256,6 +253,7 @@ export function Materiais() {
       const removido = selCodigo
       await carregarItens()
       novo()
+      setEditando(false)
       setStatus(`✅ "${removido}" removido`)
     } catch (e) {
       setStatus(`❌ ${(e as Error).message}`)
@@ -266,7 +264,7 @@ export function Materiais() {
 
   if (!svc) {
     return (
-      <div className="p-4 text-sm text-zinc-400">
+      <div className="p-6 text-center text-zinc-400 mt-12 space-y-2">
         Configure o transporte em <span className="text-zinc-200">Configurações</span> para editar
         materiais.
       </div>
@@ -274,255 +272,307 @@ export function Materiais() {
   }
 
   return (
-    <div className="p-4 space-y-4">
-      <div className="flex flex-wrap items-end gap-3">
-        <div>
-          <label className="block text-xs text-zinc-400 mb-1">Fornecedor</label>
+    <div className="p-4 space-y-4 max-w-3xl mx-auto">
+      {/* Fornecedor */}
+      <div>
+        <label className={lbl}>Fornecedor</label>
+        <div className="flex gap-2">
           <select
             value={forn}
             onChange={e => setForn(e.target.value)}
-            className={inputCls + ' min-w-[16rem]'}
+            className={inp + ' flex-1 min-w-0'}
           >
-            <option value="">— selecione —</option>
+            <option value="">— selecione um fornecedor —</option>
             {fornecedores.map(n => (
               <option key={n} value={n}>
                 {n}
               </option>
             ))}
           </select>
+          {forn && (
+            <button
+              onClick={() => void carregarItens()}
+              className="px-3 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-300 rounded-lg text-sm transition-colors"
+            >
+              Recarregar
+            </button>
+          )}
         </div>
-        {forn && (
-          <button
-            onClick={() => void carregarItens()}
-            className="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-200 rounded text-sm"
-          >
-            Recarregar
-          </button>
-        )}
-        {forn && (
-          <button
-            onClick={novo}
-            className="px-3 py-1.5 bg-green-700 hover:bg-green-600 text-white rounded text-sm font-medium"
-          >
-            + Novo material
-          </button>
-        )}
       </div>
 
-      {erro && <p className="text-sm text-red-400">❌ {erro}</p>}
+      {erro && (
+        <div className="rounded-lg p-2.5 text-sm bg-red-950 border border-red-800 text-red-300">
+          ❌ {erro}
+        </div>
+      )}
 
       {forn && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {/* Lista de códigos */}
+        <>
+          {/* Lista de materiais */}
           <div className="space-y-2">
-            <input
-              value={filtro}
-              onChange={e => setFiltro(e.target.value)}
-              placeholder="Filtrar por código ou descrição…"
-              className={inputCls + ' w-full'}
-            />
+            <div className="flex gap-2">
+              <input
+                value={filtro}
+                onChange={e => setFiltro(e.target.value)}
+                placeholder="Filtrar por código ou descrição..."
+                className={inp + ' flex-1 min-w-0'}
+              />
+              <button
+                onClick={novo}
+                className="px-3 bg-green-700 hover:bg-green-600 text-white rounded-lg text-sm font-medium transition-colors whitespace-nowrap"
+              >
+                + Novo
+              </button>
+            </div>
             <p className="text-xs text-zinc-500">
-              {carregando ? 'Carregando…' : `${filtrados.length} de ${itens.length} material(is)`}
+              {carregando ? 'Carregando...' : `${filtrados.length} de ${itens.length} material(is)`}
             </p>
-            <div className="divide-y divide-zinc-800 max-h-[60vh] overflow-y-auto border border-zinc-800 rounded">
+            <div className="border border-zinc-800 rounded-lg max-h-72 overflow-y-auto divide-y divide-zinc-800">
               {filtrados.map(({ codigo, item }) => (
                 <button
                   key={codigo}
                   onClick={() => selecionar(codigo, item)}
-                  className={
-                    'w-full text-left px-3 py-2 text-sm hover:bg-zinc-800/60 ' +
-                    (selCodigo === codigo ? 'bg-zinc-800' : '')
-                  }
+                  className={`w-full text-left px-3 py-2 text-sm transition-colors ${
+                    codigo === selCodigo ? 'bg-green-900/40 text-white' : 'text-zinc-300 hover:bg-zinc-800/60'
+                  }`}
                 >
-                  <span className="text-zinc-100">{codigo}</span>
+                  <span className="font-mono">{codigo}</span>
                   <span className="text-zinc-500"> — {String(item.descricao ?? '')}</span>
                 </button>
               ))}
+              {!carregando && filtrados.length === 0 && (
+                <p className="text-xs text-zinc-500 p-3">Nenhum material.</p>
+              )}
             </div>
           </div>
 
           {/* Editor */}
-          <div className="space-y-3">
-            <div className="grid grid-cols-2 gap-2">
-              <div>
-                <label className="block text-xs text-zinc-400 mb-1">Código</label>
-                <input
-                  value={form.codigo}
-                  onChange={e => setForm(f => ({ ...f, codigo: e.target.value }))}
-                  className={inputCls + ' w-full'}
-                />
+          {editando && (
+            <div className="border border-zinc-800 rounded-lg p-3 space-y-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className={lbl}>Código</label>
+                  <input
+                    value={form.codigo}
+                    onChange={e => setForm(f => ({ ...f, codigo: e.target.value }))}
+                    placeholder={selCodigo ? '' : 'Novo código'}
+                    className={inp}
+                  />
+                </div>
+                <div>
+                  <label className={lbl}>UMB do MIGO</label>
+                  <input
+                    value={form.umbMigo}
+                    onChange={e => setForm(f => ({ ...f, umbMigo: e.target.value }))}
+                    className={inp}
+                  />
+                </div>
               </div>
               <div>
-                <label className="block text-xs text-zinc-400 mb-1">UMB do MIGO</label>
+                <label className={lbl}>Descrição</label>
                 <input
-                  value={form.umbMigo}
-                  onChange={e => setForm(f => ({ ...f, umbMigo: e.target.value }))}
-                  className={inputCls + ' w-full'}
+                  value={form.descricao}
+                  onChange={e => setForm(f => ({ ...f, descricao: e.target.value }))}
+                  className={inp}
                 />
               </div>
-            </div>
-            <div>
-              <label className="block text-xs text-zinc-400 mb-1">Descrição</label>
-              <input
-                value={form.descricao}
-                onChange={e => setForm(f => ({ ...f, descricao: e.target.value }))}
-                className={inputCls + ' w-full'}
-              />
-            </div>
 
-            {/* Referências */}
-            <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-medium text-zinc-300">Referências</span>
-                <button
-                  onClick={addRef}
-                  className="px-2 py-0.5 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-200 rounded text-xs"
-                >
-                  + Referência
-                </button>
-              </div>
-              {form.refs.map((r, ri) => {
-                const preview = escreverConv(convsToJson(r.convs))
-                return (
-                  <div key={ri} className="border border-zinc-800 rounded p-2 space-y-2">
-                    <div className="flex items-center gap-2">
-                      <input
-                        value={r.referencia}
-                        onChange={e => setRef(ri, { referencia: e.target.value })}
-                        placeholder="referência (código do fornecedor)"
-                        className={inputCls + ' flex-1'}
-                      />
-                      <button
-                        onClick={() => delRef(ri)}
-                        className="px-2 py-1 text-xs text-red-400 hover:text-red-300"
-                        title="Remover referência"
-                      >
-                        ✕
-                      </button>
-                    </div>
+              {/* Referências */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] uppercase tracking-wide text-zinc-500">Referências</span>
+                  <button
+                    onClick={addRef}
+                    className="px-2 py-1 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-200 rounded-lg text-xs transition-colors"
+                  >
+                    + Referência
+                  </button>
+                </div>
 
-                    {r.convs.map((c, ci) => (
-                      <div key={ci} className="flex flex-wrap items-center gap-2 pl-2">
-                        <label className="flex items-center gap-1 text-xs text-zinc-400">
+                {form.refs.map((r, ri) => {
+                  const preview = escreverConv(convsToJson(r.convs))
+                  return (
+                    <div
+                      key={ri}
+                      className="border border-zinc-800 rounded-lg p-2.5 space-y-2 bg-zinc-950/40"
+                    >
+                      <div className="flex items-end gap-2">
+                        <div className="flex-1 min-w-0">
+                          <label className={lbl}>Referência (código do fornecedor)</label>
                           <input
-                            type="checkbox"
-                            checked={c.umbsIguais}
-                            onChange={e => setConv(ri, ci, { umbsIguais: e.target.checked })}
+                            value={r.referencia}
+                            onChange={e => setRef(ri, { referencia: e.target.value })}
+                            className={inp}
                           />
-                          universal
-                        </label>
-                        <input
-                          value={c.de}
-                          disabled={c.umbsIguais}
-                          onChange={e => setConv(ri, ci, { de: e.target.value })}
-                          placeholder="de (UMB)"
-                          className={inputCls + ' w-24 disabled:opacity-40'}
-                        />
-                        <input
-                          value={c.para}
-                          disabled={c.umbsIguais}
-                          onChange={e => setConv(ri, ci, { para: e.target.value })}
-                          placeholder="para (UMB)"
-                          className={inputCls + ' w-24 disabled:opacity-40'}
-                        />
-                        <input
-                          type="number"
-                          step="any"
-                          value={c.fator}
-                          onChange={e => setConv(ri, ci, { fator: parseNum(e.target.value) })}
-                          placeholder="fator"
-                          className={inputCls + ' w-24'}
-                        />
+                        </div>
                         <button
-                          onClick={() => delConv(ri, ci)}
-                          className="px-2 py-1 text-xs text-red-400 hover:text-red-300"
-                          title="Remover conversão"
+                          onClick={() => delRef(ri)}
+                          className="px-3 py-2 bg-zinc-800 hover:bg-red-900 border border-zinc-700 text-zinc-400 hover:text-red-200 rounded-lg text-xs transition-colors"
+                          title="Remover referência"
                         >
                           ✕
                         </button>
                       </div>
-                    ))}
 
-                    <div className="flex items-center justify-between pl-2">
-                      <span className="text-xs text-zinc-500">{preview || 'sem conversão'}</span>
-                      <button
-                        onClick={() => addConv(ri)}
-                        className="px-2 py-0.5 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-300 rounded text-xs"
-                      >
-                        + Conversão
-                      </button>
+                      {r.convs.map((c, ci) => (
+                        <div
+                          key={ci}
+                          className="border border-zinc-800 rounded-lg p-2 space-y-2 bg-zinc-900/60"
+                        >
+                          <div className="flex items-center justify-between">
+                            <label className="flex items-center gap-2 text-xs text-zinc-400">
+                              <input
+                                type="checkbox"
+                                checked={c.umbsIguais}
+                                onChange={e => setConv(ri, ci, { umbsIguais: e.target.checked })}
+                              />
+                              universal (vale para qualquer unidade)
+                            </label>
+                            <button
+                              onClick={() => delConv(ri, ci)}
+                              className="text-xs text-zinc-500 hover:text-red-300"
+                            >
+                              remover
+                            </button>
+                          </div>
+                          <div className="grid grid-cols-2 gap-2">
+                            <div>
+                              <label className={lbl}>De (UMB)</label>
+                              <input
+                                value={c.de}
+                                disabled={c.umbsIguais}
+                                onChange={e => setConv(ri, ci, { de: e.target.value })}
+                                className={inp}
+                              />
+                            </div>
+                            <div>
+                              <label className={lbl}>Para (UMB)</label>
+                              <input
+                                value={c.para}
+                                disabled={c.umbsIguais}
+                                onChange={e => setConv(ri, ci, { para: e.target.value })}
+                                className={inp}
+                              />
+                            </div>
+                          </div>
+                          <div>
+                            <label className={lbl}>Fator</label>
+                            <input
+                              type="number"
+                              step="any"
+                              value={c.fator}
+                              onChange={e => setConv(ri, ci, { fator: parseNum(e.target.value) })}
+                              className={inp}
+                            />
+                          </div>
+                        </div>
+                      ))}
+
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-xs text-zinc-500 truncate">
+                          {preview || 'sem conversão'}
+                        </span>
+                        <button
+                          onClick={() => addConv(ri)}
+                          className="px-2 py-1 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-300 rounded-lg text-xs transition-colors whitespace-nowrap"
+                        >
+                          + Conversão
+                        </button>
+                      </div>
                     </div>
-                  </div>
-                )
-              })}
-            </div>
-
-            {/* Aliases */}
-            <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-medium text-zinc-300">
-                  Aliases <span className="text-zinc-500">(uma referência usa a conversão de outra)</span>
-                </span>
-                <button
-                  onClick={addAlias}
-                  className="px-2 py-0.5 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-200 rounded text-xs"
-                >
-                  + Alias
-                </button>
+                  )
+                })}
               </div>
-              {form.aliases.map((a, i) => (
-                <div key={i} className="flex items-center gap-2">
-                  <input
-                    value={a.alias}
-                    onChange={e => setAlias(i, { alias: e.target.value })}
-                    placeholder="alias"
-                    className={inputCls + ' flex-1'}
-                  />
-                  <span className="text-zinc-500 text-sm">→</span>
-                  <input
-                    value={a.para}
-                    onChange={e => setAlias(i, { para: e.target.value })}
-                    placeholder="referência de destino"
-                    list="refs-do-material"
-                    className={inputCls + ' flex-1'}
-                  />
+
+              {/* Aliases */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] uppercase tracking-wide text-zinc-500">
+                    Aliases
+                  </span>
                   <button
-                    onClick={() => delAlias(i)}
-                    className="px-2 py-1 text-xs text-red-400 hover:text-red-300"
-                    title="Remover alias"
+                    onClick={addAlias}
+                    className="px-2 py-1 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-200 rounded-lg text-xs transition-colors"
                   >
-                    ✕
+                    + Alias
                   </button>
                 </div>
-              ))}
-              <datalist id="refs-do-material">
-                {form.refs.map(r => r.referencia.trim()).filter(Boolean).map(ref => (
-                  <option key={ref} value={ref} />
+                <p className="text-[11px] text-zinc-500">
+                  Uma referência que empresta a conversão de outra.
+                </p>
+                {form.aliases.map((a, i) => (
+                  <div key={i} className="flex items-end gap-2">
+                    <div className="flex-1 min-w-0">
+                      <label className={lbl}>Alias</label>
+                      <input
+                        value={a.alias}
+                        onChange={e => setAlias(i, { alias: e.target.value })}
+                        className={inp}
+                      />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <label className={lbl}>Usa a conversão de</label>
+                      <input
+                        value={a.para}
+                        onChange={e => setAlias(i, { para: e.target.value })}
+                        list="refs-do-material"
+                        className={inp}
+                      />
+                    </div>
+                    <button
+                      onClick={() => delAlias(i)}
+                      className="px-3 py-2 bg-zinc-800 hover:bg-red-900 border border-zinc-700 text-zinc-400 hover:text-red-200 rounded-lg text-xs transition-colors"
+                      title="Remover alias"
+                    >
+                      ✕
+                    </button>
+                  </div>
                 ))}
-              </datalist>
-            </div>
+                <datalist id="refs-do-material">
+                  {form.refs
+                    .map(r => r.referencia.trim())
+                    .filter(Boolean)
+                    .map(ref => (
+                      <option key={ref} value={ref} />
+                    ))}
+                </datalist>
+              </div>
 
-            <div className="flex items-center gap-2 pt-1">
-              <button
-                onClick={() => void salvar()}
-                disabled={salvando}
-                className="px-4 py-1.5 bg-green-700 hover:bg-green-600 disabled:opacity-50 text-white rounded text-sm font-medium"
-              >
-                {salvando ? 'Salvando…' : 'Salvar'}
-              </button>
-              {selCodigo && (
-                <button
-                  onClick={() => void remover()}
-                  disabled={salvando}
-                  className="px-4 py-1.5 bg-red-800 hover:bg-red-700 disabled:opacity-50 text-white rounded text-sm"
+              {status && (
+                <div
+                  className={`rounded-lg p-2.5 text-sm ${
+                    status.startsWith('✅')
+                      ? 'bg-green-950 border border-green-800 text-green-300'
+                      : status.startsWith('⚠️')
+                        ? 'bg-yellow-950 border border-yellow-800 text-yellow-300'
+                        : 'bg-red-950 border border-red-800 text-red-300'
+                  }`}
                 >
-                  Remover
-                </button>
+                  {status}
+                </div>
               )}
-              {status && <span className="text-sm text-zinc-300">{status}</span>}
+
+              <div className="flex gap-2">
+                <button
+                  onClick={() => void salvar()}
+                  disabled={salvando}
+                  className="flex-1 bg-green-600 hover:bg-green-500 disabled:opacity-40 text-white font-semibold py-2.5 rounded-lg transition-colors"
+                >
+                  {salvando ? 'Salvando...' : selCodigo ? 'Salvar alterações' : 'Adicionar'}
+                </button>
+                {selCodigo && (
+                  <button
+                    onClick={() => void remover()}
+                    disabled={salvando}
+                    className="px-4 bg-zinc-800 hover:bg-red-900 border border-zinc-700 disabled:opacity-40 text-zinc-300 hover:text-red-200 rounded-lg text-sm transition-colors"
+                  >
+                    Remover
+                  </button>
+                )}
+              </div>
             </div>
-          </div>
-        </div>
+          )}
+        </>
       )}
     </div>
   )
