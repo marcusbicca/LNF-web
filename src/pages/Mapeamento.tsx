@@ -14,6 +14,7 @@ import {
   type ConvEditavel,
 } from '../utils/conversao'
 import { ConversoesPendentes } from '../components/ConversoesPendentes'
+import { InconsistenciasPendentes } from '../components/InconsistenciasPendentes'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Mapeamento — porta web do MapearMaterialForm do LNF-Coreon.
@@ -877,6 +878,11 @@ export function Mapeamento() {
             uma segunda fila seria uma tela que ninguém lembra de visitar.
             Fechada por padrão — quem vem mapear cadastro não vem por isto. */}
         <ConversoesPendentes />
+
+        {/* Mesma porta, mesma pessoa: as NFs barradas por contradição lote↔qCom
+            caem aqui ao lado das conversões suspeitas — quase sempre a correção é
+            a mesma (cadastrar a caixa do fornecedor). Fechada por padrão. */}
+        <InconsistenciasPendentes />
 
         <div className="flex items-center justify-between">
           <h2 className="font-semibold">
