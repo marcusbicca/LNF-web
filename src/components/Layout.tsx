@@ -15,6 +15,7 @@ export type Page =
   | 'historico'
   | 'presenca'
   | 'termos'
+  | 'foton'
   | 'config'
 
 // ── as páginas viram DADO ────────────────────────────────────────────────────
@@ -37,6 +38,7 @@ const PAGINAS: Array<{ id: Page; rotulo: string }> = [
   { id: 'historico',    rotulo: 'Histórico / Debug' },
   { id: 'presenca',     rotulo: 'Presença' },
   { id: 'termos',       rotulo: 'Termos' },
+  { id: 'foton',        rotulo: 'Fóton' },
   { id: 'config',       rotulo: 'Configurações' },
 ]
 
@@ -114,7 +116,8 @@ export function Layout({ page, onNavigate, children }: LayoutProps) {
           <button
             key={p.id}
             onClick={() => ir(p.id)}
-            className={`flex-1 min-w-0 whitespace-nowrap py-4 text-sm font-medium transition-colors ${
+            title={p.rotulo}
+            className={`flex-1 min-w-0 truncate px-1 py-4 text-sm font-medium transition-colors ${
               page === p.id ? 'text-green-400' : 'text-zinc-500 hover:text-zinc-300'
             }`}
           >

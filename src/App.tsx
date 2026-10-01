@@ -15,6 +15,7 @@ import { Respostas } from './pages/Respostas'
 import { Coletas } from './pages/Coletas'
 import { TermosGlobais } from './pages/TermosGlobais'
 import { Presenca } from './pages/Presenca'
+import { Foton } from './pages/Foton'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Trocar de aba não pode apagar o trabalho
@@ -72,6 +73,7 @@ export default function App() {
         {painel('coletas', <Coletas />)}
         {painel('termos', <TermosGlobais />)}
         {painel('presenca', <Presenca />)}
+        {painel('foton', <Foton />)}
         {painel('config', <Configuracoes />)}
       </Layout>
     </AppProvider>
