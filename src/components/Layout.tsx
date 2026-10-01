@@ -81,12 +81,13 @@ export function Layout({ page, onNavigate, children }: LayoutProps) {
     // tela com ela escondida — o rodapé ficaria fora do alcance do dedo.
     <div className="h-[100dvh] overflow-hidden bg-black text-white flex flex-col">
       <header className="shrink-0 bg-black border-b border-zinc-800 px-4 py-3 flex items-center gap-3">
-        {/* ── o menu do celular ──────────────────────────────────────────────
-            Só abaixo de md. No desktop a barra de baixo cabe inteira e uma
-            gaveta seria um clique a mais para chegar ao mesmo lugar. */}
+        {/* ── o menu ─────────────────────────────────────────────────────────
+            O mesmo no celular e no desktop. A barra de baixo do desktop não
+            cabia mais (são 16 páginas): os rótulos encolhiam até virar
+            reticências. A gaveta lista tudo em coluna, legível. */}
         <button
           onClick={() => setGaveta(true)}
-          className="md:hidden -ml-1 p-1 text-zinc-400 hover:text-white"
+          className="-ml-1 p-1 text-zinc-400 hover:text-white"
           aria-label="Abrir menu"
         >
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -98,39 +99,17 @@ export function Layout({ page, onNavigate, children }: LayoutProps) {
         {/* Lê a versão do package.json — fonte única, para não congelar de novo. */}
         <span className="text-xs text-zinc-500 font-mono">v{pkg.version}</span>
 
-        {/* No celular a barra de baixo some, e com ela o rótulo do lugar onde
-            se está. Sem isto, a tela perde o próprio nome. */}
-        <span className="md:hidden ml-auto text-xs text-zinc-500 truncate">{atual}</span>
+        {/* Sem barra de páginas, a tela perde o próprio nome sem isto. */}
+        <span className="ml-auto text-xs text-zinc-500 truncate">{atual}</span>
       </header>
 
       <main className="flex-1 min-h-0 overflow-y-auto">{children}</main>
-
-      {/* ── a barra de baixo, agora só no desktop ─────────────────────────────
-          Ela tinha overflow-x-auto: nove abas não cabem na largura de um
-          celular, então ficava uma barra que ROLA na horizontal — o gesto mais
-          fácil de não descobrir que existe, e as últimas abas viviam fora da
-          tela. No desktop a largura sobra e ela continua sendo o caminho mais
-          curto; no celular quem faz esse papel é a gaveta. */}
-      <nav className="shrink-0 bg-zinc-950 border-t border-zinc-800 hidden md:flex safe-area-pb">
-        {PAGINAS.map((p) => (
-          <button
-            key={p.id}
-            onClick={() => ir(p.id)}
-            title={p.rotulo}
-            className={`flex-1 min-w-0 truncate px-1 py-4 text-sm font-medium transition-colors ${
-              page === p.id ? 'text-green-400' : 'text-zinc-500 hover:text-zinc-300'
-            }`}
-          >
-            {p.rotulo}
-          </button>
-        ))}
-      </nav>
 
       {/* ── a gaveta ──────────────────────────────────────────────────────────
           Montada só quando aberta: fechada, ela não existe no DOM nem intercepta
           toque nenhum. */}
       {gaveta && (
-        <div className="md:hidden fixed inset-0 z-50 flex">
+        <div className="fixed inset-0 z-50 flex">
           <div
             className="absolute inset-0 bg-black/70"
             onClick={() => setGaveta(false)}
