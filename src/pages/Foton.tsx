@@ -238,7 +238,7 @@ function Computadores({ linhas, api, agir }: PropsLista) {
 // ── Acessos ──────────────────────────────────────────────────────────────────
 
 function Acessos({ linhas, api, agir }: PropsLista) {
-  const [novo, setNovo] = useState({ usuario: '', tenant: '', validade_dias: '7', exige_aprovacao: false, observacao: '' })
+  const [novo, setNovo] = useState({ usuario: '', tenant: '', validade_dias: '7', exige_aprovacao: false, admin: false, observacao: '' })
   const criar = () =>
     agir(
       () =>
@@ -247,10 +247,11 @@ function Acessos({ linhas, api, agir }: PropsLista) {
           tenant: novo.tenant.trim(),
           validade_dias: Number(novo.validade_dias) || 7,
           exige_aprovacao: novo.exige_aprovacao,
+          admin: novo.admin && !!novo.usuario.trim(),
           observacao: novo.observacao.trim(),
         }),
       'Acesso criado.',
-    ).then(() => setNovo({ usuario: '', tenant: '', validade_dias: '7', exige_aprovacao: false, observacao: '' }))
+    ).then(() => setNovo({ usuario: '', tenant: '', validade_dias: '7', exige_aprovacao: false, admin: false, observacao: '' }))
 
   return (
     <div className="space-y-3">
@@ -276,6 +277,11 @@ function Acessos({ linhas, api, agir }: PropsLista) {
             onChange={(e) => setNovo({ ...novo, exige_aprovacao: e.target.checked })} />
           Computador novo precisa de aprovação (recomendado para liberar por tenant)
         </label>
+        <label className={`flex items-center gap-2 text-sm ${novo.usuario.trim() ? 'text-zinc-300' : 'text-zinc-600'}`}>
+          <input type="checkbox" checked={novo.admin && !!novo.usuario.trim()} disabled={!novo.usuario.trim()}
+            onChange={(e) => setNovo({ ...novo, admin: e.target.checked })} />
+          Administrador: pode usar "Editar banco" no Fóton (só para usuário com nome)
+        </label>
         <button
           onClick={() => void criar()}
           disabled={!novo.usuario.trim() && !novo.tenant.trim()}
@@ -297,6 +303,7 @@ function Acessos({ linhas, api, agir }: PropsLista) {
           </div>
           <div className="flex flex-wrap gap-x-4 text-xs text-zinc-500">
             <span>{String(l.validade_dias)} dias sem internet</span>
+            {!!l.admin && <span className="text-green-400">administrador</span>}
             {!!l.exige_aprovacao && <span className="text-amber-400">aprova computador novo</span>}
             {!!l.expira_em && <span>até {fmt(l.expira_em)}</span>}
             <span>origem {String(l.origem ?? '')}</span>
@@ -311,6 +318,12 @@ function Acessos({ linhas, api, agir }: PropsLista) {
               'Atualizado.')}>
               {l.exige_aprovacao ? 'Não exigir aprovação' : 'Exigir aprovação de PC'}
             </BotaoPequeno>
+            {!!l.usuario && (
+              <BotaoPequeno onClick={() => void agir(() => api.salvar('acessos', { id: l.id, admin: !l.admin }),
+                l.admin ? 'Deixou de ser administrador.' : 'Agora é administrador (vale na próxima abertura do Fóton).')}>
+                {l.admin ? 'Tirar administrador' : 'Tornar administrador'}
+              </BotaoPequeno>
+            )}
             <BotaoPequeno
               perigo
               onClick={() => confirm('Excluir este acesso?') && void agir(() => api.excluir('acessos', l.id), 'Acesso excluído.')}
