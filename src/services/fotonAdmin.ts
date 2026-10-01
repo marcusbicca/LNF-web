@@ -9,7 +9,7 @@
 // navegador — mesma exposição da chave da lnf-api, que também fica aqui.
 // ─────────────────────────────────────────────────────────────────────────────
 
-export type TabelaFoton = 'acessos' | 'dispositivos' | 'genericos' | 'senhas' | 'registros'
+export type TabelaFoton = 'acessos' | 'dispositivos' | 'genericos' | 'senhas' | 'registros' | 'versoes' | 'ajustes'
 export type Linha = Record<string, unknown>
 
 export interface ConexaoFoton {
@@ -18,6 +18,7 @@ export interface ConexaoFoton {
 }
 
 export interface ResumoFoton {
+  versao_liberada: string | null
   acessos: number
   bloqueados: number
   computadores: number
@@ -96,6 +97,11 @@ export class FotonAdmin {
   /** Senha pessoal do usuário (para se identificar em login genérico, ex.: "Tecnova"). null = remover. */
   senhaPessoal(usuario: string, senha: string | null) {
     return this.chamar<{ acessos: number }>({ op: 'senha_pessoal', usuario, senha })
+  }
+
+  /** Libera uma versão publicada pelo CI para todos (null = nenhuma: cada um roda a do próprio Foton.exe). */
+  liberarVersao(versao: string | null) {
+    return this.chamar<{ mensagem: string }>({ op: 'liberar_versao', versao })
   }
 
   novaSenha(descricao: string, senha: string, tenant?: string) {
