@@ -584,7 +584,7 @@ function Versoes({ linhas, api, agir }: PropsLista) {
         </div>
       </Cartao>
 
-      {linhas.length === 0 && <Vazio>Nenhuma versão publicada. O CI publica cada build quando os segredos FOTON_CHAVE_MESTRA e FOTON_PUBLICAR estão no GitHub.</Vazio>}
+      {linhas.length === 0 && <Vazio>Nenhuma versão publicada. O CI publica cada build protegido (segredo FOTON_CHAVE_MESTRA no GitHub).</Vazio>}
       {linhas.map((l) => (
         <Cartao key={String(l.versao)} alerta={false}>
           <div className="flex flex-wrap items-center gap-2 text-sm">
