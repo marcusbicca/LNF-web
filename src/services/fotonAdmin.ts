@@ -104,6 +104,11 @@ export class FotonAdmin {
     return this.chamar<{ mensagem: string }>({ op: 'liberar_versao', versao })
   }
 
+  /** Marca uma versão como beta: vai só para os acessos marcados como beta (null = nenhuma). */
+  betaVersao(versao: string | null) {
+    return this.chamar<{ mensagem: string }>({ op: 'beta_versao', versao })
+  }
+
   novaSenha(descricao: string, senha: string, tenant?: string) {
     return this.chamar<{ id: number }>({ op: 'nova_senha', descricao, senha, tenant: tenant || null })
   }

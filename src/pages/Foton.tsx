@@ -310,6 +310,7 @@ function Acessos({ linhas, api, agir }: PropsLista) {
           <div className="flex flex-wrap gap-x-4 text-xs text-zinc-500">
             <span>{String(l.validade_dias)} dias sem internet</span>
             {!!l.admin && <span className="text-green-400">administrador</span>}
+            {!!l.beta && <span className="text-violet-400">recebe beta</span>}
             {!!l.usuario && (l.tem_senha
               ? <span className="text-green-400">tem senha pessoal</span>
               : <span>sem senha pessoal</span>)}
@@ -334,6 +335,10 @@ function Acessos({ linhas, api, agir }: PropsLista) {
                 {l.admin ? 'Tirar administrador' : 'Tornar administrador'}
               </BotaoPequeno>
             )}
+            <BotaoPequeno onClick={() => void agir(() => api.salvar('acessos', { id: l.id, beta: !l.beta }),
+              l.beta ? 'Deixou de receber beta (vale na próxima abertura do Fóton).' : 'Agora recebe a versão beta (vale na próxima abertura do Fóton).')}>
+              {l.beta ? 'Tirar do beta' : 'Receber beta'}
+            </BotaoPequeno>
             <BotaoPequeno
               perigo
               onClick={() => confirm('Excluir este acesso?') && void agir(() => api.excluir('acessos', l.id), 'Acesso excluído.')}
@@ -487,6 +492,7 @@ const RESULTADO: Record<string, string> = {
   publicar_chave_invalida: '⚠️ CI: chave de publicação errada',
   'admin:publicar': '📦 versão publicada pelo CI',
   'admin:liberar_versao': '🚀 versão liberada',
+  'admin:beta_versao': '🧪 versão beta',
 }
 
 function Registros({ linhas }: { linhas: Linha[] }) {
@@ -535,8 +541,9 @@ function Campo({ rotulo, children }: { rotulo: string; children: ReactNode }) {
 
 // ── Versões ──────────────────────────────────────────────────────────────────
 //
-// O CI publica cada build como "disponível" (função foton-publicar). Liberar faz
-// todo Fóton baixar e rodar essa versão na próxima abertura. Se a versão exigir
+// O CI publica um build como "disponível" quando pedido (função foton-publicar).
+// Liberar faz todo Fóton baixar e rodar essa versão na próxima abertura; a versão
+// beta vai só para os acessos marcados "recebe beta". Se a versão liberada exigir
 // casca nova (Foton.exe), cada um copia da pasta da rede definida aqui.
 
 function Versoes({ linhas, api, agir }: PropsLista) {
@@ -548,6 +555,7 @@ function Versoes({ linhas, api, agir }: PropsLista) {
     )
   }, [api])
   const liberada = linhas.find((l) => l.situacao === 'liberada')
+  const beta = linhas.find((l) => l.situacao === 'beta')
   const tamanho = (n: unknown) => `${(Number(n) / 1024).toFixed(0)} KB`
 
   return (
@@ -582,6 +590,22 @@ function Versoes({ linhas, api, agir }: PropsLista) {
             </span>
           )}
         </div>
+        <div className="flex flex-wrap items-center gap-2 text-sm">
+          <span>Beta:</span>
+          <span className="font-mono">{beta ? String(beta.versao) : 'nenhuma (quem recebe beta roda a liberada)'}</span>
+          {!!beta && (
+            <span className="ml-auto">
+              <BotaoPequeno
+                onClick={() => void agir(() => api.betaVersao(null), 'Nenhuma versão beta.')}>
+                Encerrar beta
+              </BotaoPequeno>
+            </span>
+          )}
+        </div>
+        <p className="text-xs text-zinc-500">
+          A beta vai para os acessos marcados "recebe beta" (aba Acessos). Se ela exigir casca nova, eles seguem na
+          liberada até pegarem o Foton.exe dela.
+        </p>
       </Cartao>
 
       {linhas.length === 0 && <Vazio>Nenhuma versão publicada. O CI publica cada build protegido (segredo FOTON_CHAVE_MESTRA no GitHub).</Vazio>}
@@ -591,7 +615,9 @@ function Versoes({ linhas, api, agir }: PropsLista) {
             <span className="font-mono">{String(l.versao)}</span>
             {l.situacao === 'liberada'
               ? <span className="ml-auto text-xs text-green-400">liberada</span>
-              : <span className="ml-auto text-xs text-zinc-500">disponível</span>}
+              : l.situacao === 'beta'
+                ? <span className="ml-auto text-xs text-violet-400">beta</span>
+                : <span className="ml-auto text-xs text-zinc-500">disponível</span>}
           </div>
           <div className="flex flex-wrap gap-x-4 text-xs text-zinc-500">
             <span>{fmt(l.publicado_em)}</span>
@@ -599,7 +625,7 @@ function Versoes({ linhas, api, agir }: PropsLista) {
             {!!l.commit && <span className="font-mono">{String(l.commit).slice(0, 7)}</span>}
             <span>{tamanho(l.pacote_tamanho)}</span>
             <span>casca nível {String(l.nivel_casca)}</span>
-            {!!l.liberado_em && <span>liberada em {fmt(l.liberado_em)}</span>}
+            {!!l.liberado_em && <span>{l.situacao === 'beta' ? 'beta desde' : 'liberada em'} {fmt(l.liberado_em)}</span>}
           </div>
           {l.situacao !== 'liberada' && (
             <div className="flex flex-wrap gap-2">
@@ -608,11 +634,17 @@ function Versoes({ linhas, api, agir }: PropsLista) {
                   void agir(() => api.liberarVersao(String(l.versao)), `Versão ${String(l.versao)} liberada.`)}>
                 Liberar para todos
               </BotaoPequeno>
-              <BotaoPequeno perigo
+              {l.situacao !== 'beta' && (
+                <BotaoPequeno
+                  onClick={() => void agir(() => api.betaVersao(String(l.versao)), `Versão ${String(l.versao)} em beta.`)}>
+                  Marcar como beta
+                </BotaoPequeno>
+              )}
+              {l.situacao !== 'beta' && <BotaoPequeno perigo
                 onClick={() => confirm(`Excluir a versão ${String(l.versao)}?`) &&
                   void agir(() => api.excluir('versoes', l.versao), 'Versão excluída.')}>
                 Excluir
-              </BotaoPequeno>
+              </BotaoPequeno>}
             </div>
           )}
         </Cartao>
