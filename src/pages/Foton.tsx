@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
   FotonAdmin,
   lerConexao,
@@ -36,25 +36,31 @@ export function Foton() {
 
   const [sub, setSub] = useState<Sub>('computadores')
   const [resumo, setResumo] = useState<ResumoFoton | null>(null)
-  const [linhas, setLinhas] = useState<Linha[]>([])
+  // As linhas guardam de qual tabela vieram: ao trocar de subaba, a lista anterior não aparece na nova
+  // (era o que mostrava versões "undefined" com as linhas de Computadores ou Registros).
+  const [lista, setLista] = useState<{ tabela: TabelaFoton; linhas: Linha[] } | null>(null)
+  const pedido = useRef(0)
   const [carregando, setCarregando] = useState(false)
   const [erro, setErro] = useState<string | null>(null)
   const [aviso, setAviso] = useState<string | null>(null)
 
   const tabela: TabelaFoton = sub === 'computadores' ? 'dispositivos' : sub
+  const linhas = lista?.tabela === tabela ? lista.linhas : []
 
   const carregar = useCallback(async () => {
     if (!conexao.chave) return
+    const meu = ++pedido.current
     setCarregando(true)
     setErro(null)
     try {
       const [r, l] = await Promise.all([api.resumo(), api.listar(tabela, tabela === 'registros' ? 300 : 1000)])
+      if (meu !== pedido.current) return // trocou de subaba no meio: esta resposta já não vale
       setResumo(r)
-      setLinhas(l)
+      setLista({ tabela, linhas: Array.isArray(l) ? l : [] })
     } catch (e) {
-      setErro((e as Error).message)
+      if (meu === pedido.current) setErro((e as Error).message)
     } finally {
-      setCarregando(false)
+      if (meu === pedido.current) setCarregando(false)
     }
   }, [api, conexao.chave, tabela])
 
@@ -139,6 +145,8 @@ export function Foton() {
 
       {!conexao.chave ? (
         <p className="text-sm text-zinc-500">Informe a chave de administrador em "Conexão".</p>
+      ) : lista?.tabela !== tabela ? (
+        <Vazio>{carregando ? 'Lendo...' : 'Nada carregado.'}</Vazio>
       ) : (
         <>
           {sub === 'computadores' && <Computadores linhas={linhas} api={api} agir={agir} />}
