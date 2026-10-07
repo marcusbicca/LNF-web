@@ -349,6 +349,8 @@ export interface TransporteConfig {
   edgeUrl?: string
   edgeChave?: string
   usuario?: string
+  // Chave de dev: sem ela, a lnf-api trata o nível 3 como nível 2.
+  chaveDev?: string
 }
 
 export class SupabaseService {
@@ -356,6 +358,7 @@ export class SupabaseService {
   private edgeUrl: string
   private edgeChave: string
   private usuario: string
+  private chaveDev: string
   private configurado: boolean
 
   constructor(cfg: TransporteConfig) {
@@ -363,6 +366,7 @@ export class SupabaseService {
     this.edgeUrl = (cfg?.edgeUrl ?? '').trim()
     this.edgeChave = (cfg?.edgeChave ?? '').trim()
     this.usuario = (cfg?.usuario ?? '').trim()
+    this.chaveDev = (cfg?.chaveDev ?? '').trim()
     this.configurado = !!this.edgeUrl || !!this.paUrl
   }
 
@@ -414,12 +418,20 @@ export class SupabaseService {
     const headers: Record<string, string> = { 'Content-Type': 'application/json' }
     if (this.viaEdge) headers['x-lnf-chave'] = this.edgeChave
 
+    // A chave de dev vai em cabeçalho na Edge. No PA ela vai no corpo, porque o
+    // fluxo repassa só o corpo — mas o paLog registra 'corpo', sem a chave.
+    let corpoEnvio = corpo
+    if (this.chaveDev) {
+      if (this.viaEdge) headers['x-lnf-dev'] = this.chaveDev
+      else corpoEnvio = JSON.stringify({ ...payload, chaveDev: this.chaveDev })
+    }
+
     let res: Response
     try {
       res = await fetch(alvo, {
         method: 'POST',
         headers,
-        body: corpo,
+        body: corpoEnvio,
       })
     } catch (e) {
       // Na Edge, "Failed to fetch" quase sempre é CORS ou URL errada — o

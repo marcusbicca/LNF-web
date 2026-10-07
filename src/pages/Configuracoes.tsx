@@ -28,6 +28,7 @@ export function Configuracoes() {
     itensPath: config?.itensPath ?? 'itens.json',
     usuario: config?.usuario ?? '',
     usuariosPaUrl: config?.usuariosPaUrl ?? '',
+    chaveDev: config?.chaveDev ?? '',
   })
 
   function set(field: keyof Config, value: string) {
@@ -73,6 +74,16 @@ export function Configuracoes() {
             ? 'Transporte em uso: Edge Function. Esvazie a URL dela para voltar ao Power Automate.'
             : 'Transporte em uso: Power Automate. Preencha a URL da Edge Function para trocar.'}
         </p>
+
+        <Field label="Chave de dev (só para o nível 3)">
+          <input
+            type="password"
+            value={form.chaveDev ?? ''}
+            onChange={e => set('chaveDev', e.target.value)}
+            placeholder="o valor definido em LNF_CHAVE_DEV"
+            className="input"
+          />
+        </Field>
 
         <Field label="URL do fluxo de busca de usuários (Power Automate)">
           <input

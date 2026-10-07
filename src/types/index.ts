@@ -132,6 +132,10 @@ export interface Config {
   // URL do fluxo do PA que busca um usuário no diretório da empresa. Recebe
   // { usuario: "<username>@<tenant>" }. Opcional: vazia, a busca não aparece.
   usuariosPaUrl?: string
+
+  // Chave de dev (LNF_CHAVE_DEV da lnf-api). Só no navegador do dev: sem ela,
+  // o nível 3 vale nível 2. Fica no localStorage, como as outras chaves.
+  chaveDev?: string
 }
 
 // ── Análise de itens para registro ──────────────────────────────────────────
