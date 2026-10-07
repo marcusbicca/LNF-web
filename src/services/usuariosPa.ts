@@ -21,6 +21,27 @@ export function tenantDoUsuario(
   return { tenant: t || TENANT_PADRAO, empresa }
 }
 
+// Chamada crua: status e corpo exatamente como o fluxo devolveu. Usada pelo
+// painel de captura em Configurações, para ver o formato real da resposta.
+export async function chamarFluxoUsuarios(
+  url: string,
+  usuario: string,
+): Promise<{ status: number; contentType: string; texto: string; ms: number }> {
+  const t0 = performance.now()
+  const r = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ usuario }),
+  })
+  const texto = await r.text()
+  return {
+    status: r.status,
+    contentType: r.headers.get('content-type') ?? '',
+    texto,
+    ms: Math.round(performance.now() - t0),
+  }
+}
+
 export async function buscarUsuarioNoFluxo(
   url: string,
   username: string,
