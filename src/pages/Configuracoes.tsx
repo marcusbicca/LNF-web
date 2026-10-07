@@ -26,6 +26,7 @@ export function Configuracoes() {
     edgeChave: config?.edgeChave ?? '',
     itensPath: config?.itensPath ?? 'itens.json',
     usuario: config?.usuario ?? '',
+    usuariosPaUrl: config?.usuariosPaUrl ?? '',
   })
 
   function set(field: keyof Config, value: string) {
@@ -71,6 +72,16 @@ export function Configuracoes() {
             ? 'Transporte em uso: Edge Function. Esvazie a URL dela para voltar ao Power Automate.'
             : 'Transporte em uso: Power Automate. Preencha a URL da Edge Function para trocar.'}
         </p>
+
+        <Field label="URL do fluxo de busca de usuários (Power Automate)">
+          <input
+            type="password"
+            value={form.usuariosPaUrl ?? ''}
+            onChange={e => set('usuariosPaUrl', e.target.value)}
+            placeholder="https://...powerautomate.../invoke?..."
+            className="input"
+          />
+        </Field>
 
         <Field label="Usuário (autoriza quem pode gravar)">
           <input
