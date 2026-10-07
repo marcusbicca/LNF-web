@@ -62,11 +62,37 @@ export async function buscarUsuarioNoFluxo(
   }
 }
 
+// O que o fluxo devolve (formato capturado em 07/10/2026):
+//   { nome_completo, cargo, setor, local_de_trabalho, cidade, estado, pais }
+// Usuário que o diretório não conhece volta sem nome_completo (ou vazio).
+export interface PessoaDiretorio {
+  nome: string
+  cargo: string
+  setor: string
+  local: string // local_de_trabalho, ou cidade/estado/país do que vier
+}
+
+export function lerPessoa(r: unknown): PessoaDiretorio | null {
+  if (!r || typeof r !== 'object' || Array.isArray(r)) return null
+  const o = r as Record<string, unknown>
+  const t = (k: string) => (typeof o[k] === 'string' ? (o[k] as string).trim() : '')
+  const nome = t('nome_completo') || nomeDaResposta(r)
+  if (!nome) return null
+  const lugar = [t('cidade'), t('estado'), t('pais')].filter(Boolean).join(' / ')
+  const local = t('local_de_trabalho')
+  return {
+    nome,
+    cargo: t('cargo'),
+    setor: t('setor'),
+    local: local && lugar && !lugar.includes(local) ? `${local} · ${lugar}` : local || lugar,
+  }
+}
+
 // Nome de exibição da resposta, se vier em algum dos formatos comuns do Graph.
 export function nomeDaResposta(r: unknown): string {
   if (!r || typeof r !== 'object') return ''
   const o = r as Record<string, unknown>
-  for (const k of ['displayName', 'DisplayName', 'nome', 'name', 'Nome']) {
+  for (const k of ['nome_completo', 'displayName', 'DisplayName', 'nome', 'name', 'Nome']) {
     if (typeof o[k] === 'string' && (o[k] as string).trim()) return (o[k] as string).trim()
   }
   for (const k of ['body', 'resposta', 'resultado', 'value']) {
