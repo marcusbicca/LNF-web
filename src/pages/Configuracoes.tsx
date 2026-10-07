@@ -3,6 +3,7 @@ import { useApp } from '../context/AppContext'
 import type { Config } from '../types'
 import { SupabaseService } from '../services/supabase'
 import { GitHubService } from '../services/github'
+import { chamarFluxoUsuarios, TENANT_PADRAO } from '../services/usuariosPa'
 import {
   importarLnfFiles,
   IMPORT_DEFAULTS,
@@ -26,6 +27,7 @@ export function Configuracoes() {
     edgeChave: config?.edgeChave ?? '',
     itensPath: config?.itensPath ?? 'itens.json',
     usuario: config?.usuario ?? '',
+    usuariosPaUrl: config?.usuariosPaUrl ?? '',
   })
 
   function set(field: keyof Config, value: string) {
@@ -71,6 +73,16 @@ export function Configuracoes() {
             ? 'Transporte em uso: Edge Function. Esvazie a URL dela para voltar ao Power Automate.'
             : 'Transporte em uso: Power Automate. Preencha a URL da Edge Function para trocar.'}
         </p>
+
+        <Field label="URL do fluxo de busca de usuários (Power Automate)">
+          <input
+            type="password"
+            value={form.usuariosPaUrl ?? ''}
+            onChange={e => set('usuariosPaUrl', e.target.value)}
+            placeholder="https://...powerautomate.../invoke?..."
+            className="input"
+          />
+        </Field>
 
         <Field label="Usuário (autoriza quem pode gravar)">
           <input
@@ -125,9 +137,109 @@ export function Configuracoes() {
           no pedido e a <code>lnf-api</code> decide quem pode gravar.</p>
       </div>
 
+      <CapturaFluxoUsuarios url={form.usuariosPaUrl ?? ''} />
+
       <DiagnosticoPa cfg={form} />
 
       <ImportarLnfFiles cfg={form} />
+    </div>
+  )
+}
+
+// ── Captura da resposta do fluxo de usuários ─────────────────────────────────
+// Chama o fluxo com um usuario@tenant qualquer e mostra a resposta crua (status,
+// content-type, corpo), com botão de copiar — para conhecer o formato real e
+// então ajustar o tratamento em services/usuariosPa.ts.
+function CapturaFluxoUsuarios({ url }: { url: string }) {
+  const [aberto, setAberto] = useState(false)
+  const [usuario, setUsuario] = useState('')
+  const [tenant, setTenant] = useState(TENANT_PADRAO)
+  const [busy, setBusy] = useState(false)
+  const [saida, setSaida] = useState<string | null>(null)
+  const [copiado, setCopiado] = useState(false)
+
+  async function chamar() {
+    setBusy(true)
+    setCopiado(false)
+    const alvo = `${usuario.trim()}@${tenant.trim().replace(/^@/, '')}`
+    try {
+      const r = await chamarFluxoUsuarios(url.trim(), alvo)
+      let corpo = r.texto
+      try {
+        corpo = JSON.stringify(JSON.parse(r.texto), null, 2)
+      } catch {
+        /* não é JSON: mostra como veio */
+      }
+      setSaida(
+        `pedido: ${JSON.stringify({ usuario: alvo })}\n` +
+          `status: ${r.status} · ${r.contentType || 'sem content-type'} · ${r.ms} ms\n\n` +
+          corpo,
+      )
+    } catch (e) {
+      // TypeError aqui costuma ser CORS: o fluxo não liberou o navegador.
+      setSaida(`pedido: ${JSON.stringify({ usuario: alvo })}\nfalhou: ${e instanceof Error ? `${e.name}: ${e.message}` : String(e)}`)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function copiar() {
+    if (!saida) return
+    try {
+      await navigator.clipboard.writeText(saida)
+      setCopiado(true)
+    } catch {
+      /* sem clipboard: dá pra selecionar o texto à mão */
+    }
+  }
+
+  return (
+    <div className="bg-zinc-900 border border-zinc-700 rounded-lg p-3 space-y-3 text-sm">
+      <button onClick={() => setAberto(a => !a)} className="w-full text-left font-medium text-zinc-300">
+        {aberto ? '▾' : '▸'} Capturar resposta do fluxo de usuários
+      </button>
+      {aberto && (
+        <>
+          {!url.trim() && (
+            <p className="text-xs text-yellow-300">Preencha a URL do fluxo de busca de usuários acima.</p>
+          )}
+          <div className="flex gap-2">
+            <input
+              value={usuario}
+              onChange={e => setUsuario(e.target.value)}
+              placeholder="username"
+              className="input flex-1"
+            />
+            <input
+              value={tenant}
+              onChange={e => setTenant(e.target.value)}
+              placeholder="tenant"
+              className="input flex-1"
+            />
+          </div>
+          <div className="flex gap-2">
+            <button
+              onClick={() => void chamar()}
+              disabled={busy || !url.trim() || !usuario.trim()}
+              className="flex-1 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-40 text-white py-2 rounded-lg"
+            >
+              {busy ? 'Chamando...' : 'Chamar fluxo'}
+            </button>
+            <button
+              onClick={() => void copiar()}
+              disabled={!saida}
+              className="flex-1 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-40 text-white py-2 rounded-lg"
+            >
+              {copiado ? 'Copiado ✓' : 'Copiar resposta'}
+            </button>
+          </div>
+          {saida && (
+            <pre className="text-[11px] text-zinc-300 bg-black/40 rounded p-2 max-h-96 overflow-auto whitespace-pre-wrap break-all select-all">
+              {saida}
+            </pre>
+          )}
+        </>
+      )}
     </div>
   )
 }

@@ -97,6 +97,54 @@ function resumoDoExecutar(resultado: unknown): string {
   }
 }
 
+// ── relato do Executar (relatos_executar) ────────────────────────────────────
+//
+// Uma linha por Executar local que gerou relato. Só as colunas leves: o recorte
+// em si ('executar') é buscado pelo id no clique.
+interface RelatoExecutar {
+  id: number
+  criado_em: string
+  usuario: string
+  nfs: Array<{ chave: string; numero: string; serie: string; fornecedor: string }>
+  motivos: Array<{ tipo: string; nf: string; codigo: string; referencia: string; detalhe: string }>
+}
+
+const ROTULO_MOTIVO: Record<string, string> = {
+  conversao: 'conversão',
+  umb_migo: 'unidade',
+  lote_qcom: 'lote↔qCom',
+}
+
+function lerRelato(row: Record<string, unknown>): RelatoExecutar {
+  const lista = (v: unknown) => (Array.isArray(v) ? (v as Record<string, unknown>[]) : [])
+  const s = (v: unknown) => (v == null ? '' : String(v))
+  return {
+    id: Number(row.id),
+    criado_em: s(row.criado_em),
+    usuario: s(row.usuario),
+    nfs: lista(row.nfs).map((n) => ({
+      chave: s(n.chave), numero: s(n.numero), serie: s(n.serie), fornecedor: s(n.fornecedor),
+    })),
+    motivos: lista(row.motivos).map((m) => ({
+      tipo: s(m.tipo), nf: s(m.nf), codigo: s(m.codigo), referencia: s(m.referencia), detalhe: s(m.detalhe),
+    })),
+  }
+}
+
+// "NF 1234 · Fornecedor — conversão ×2, lote↔qCom" — o que reconhece o relato
+// na lista sem abrir.
+function resumoDoRelato(r: RelatoExecutar): string {
+  const nf = r.nfs[0]
+  const nome = nf ? [nf.numero && `NF ${nf.numero}`, nf.fornecedor].filter(Boolean).join(' · ') : ''
+  const base = r.nfs.length > 1 ? `${r.nfs.length} NFs — ${nome}…` : nome || '—'
+  const cont = new Map<string, number>()
+  for (const m of r.motivos) cont.set(m.tipo, (cont.get(m.tipo) ?? 0) + 1)
+  const motivos = [...cont]
+    .map(([t, n]) => `${ROTULO_MOTIVO[t] ?? t}${n > 1 ? ` ×${n}` : ''}`)
+    .join(', ')
+  return motivos ? `${base} — ${motivos}` : base
+}
+
 // ── as mensagens, na ordem de gravidade do UsarUltimoExecutar ────────────────
 function mensagensDe(sinais: EstadoLancamento['sinais']): MensagemFeedback[] {
   const m: MensagemFeedback[] = []
@@ -1101,6 +1149,10 @@ function Importar({ onCarregar }: { onCarregar: (e: EstadoLancamento) => void })
     return new SolicitacoesService(new SupabaseService(config), config.usuario ?? '')
   }, [config])
 
+  // Leitura direta das tabelas — para os relatos do Executar (relatos_executar),
+  // que não passam pela fila de solicitações.
+  const svc = useMemo(() => (config ? new SupabaseService(config) : null), [config])
+
   const [aberto, setAberto] = useState(false)
   const [texto, setTexto] = useState('')
   const [destinatario, setDestinatario] = useState('')
@@ -1126,6 +1178,14 @@ function Importar({ onCarregar }: { onCarregar: (e: EstadoLancamento) => void })
   // acordar nem Executar a rodar de novo.
   const [recentes, setRecentes] = useState<Solicitacao[] | null>(null)
   const [carregandoRecentes, setCarregandoRecentes] = useState(false)
+
+  // ── relatos do Executar ────────────────────────────────────────────────
+  //
+  // Quando um Executar LOCAL gera suspeita de cadastro/conversão ou barra uma
+  // NF por lote↔qCom, o Coreon grava no fim o recorte da resposta — só as NFs
+  // com problema — em relatos_executar. Entram nesta mesma lista. A lista lê
+  // só as colunas leves; o recorte ('executar') vem pelo id no clique.
+  const [relatos, setRelatos] = useState<RelatoExecutar[]>([])
 
   const [bruto, setBruto] = useState<unknown>(null)
   const [chaves, setChaves] = useState<string[]>([])
@@ -1201,10 +1261,43 @@ function Importar({ onCarregar }: { onCarregar: (e: EstadoLancamento) => void })
       // Ambas concluem com sucesso e não têm o que abrir. Some da lista quem
       // não trouxer 'Nfs'.
       setRecentes(linhas.filter((l) => temNfs(l.resultado)))
+
+      // Os relatos são um extra: falhar aqui (tabela ainda não migrada, rede)
+      // não pode esconder os executares da fila, que já chegaram.
+      try {
+        const rows = svc
+          ? await svc.lerLinhas('relatos_executar', {
+              select: 'id,criado_em,usuario,nfs,motivos',
+              order: 'criado_em.desc',
+              limit: 60,
+            })
+          : []
+        setRelatos(rows.map(lerRelato))
+      } catch {
+        setRelatos([])
+      }
     } catch (e) {
       setErro((e as Error).message)
     } finally {
       setCarregandoRecentes(false)
+    }
+  }
+
+  // O recorte só é buscado quando alguém escolhe o relato.
+  async function abrirRelato(id: number) {
+    if (!svc) return
+    setErro(null)
+    try {
+      const rows = await svc.lerLinhas('relatos_executar', {
+        select: 'executar',
+        filtros: `id=eq.${id}`,
+        limit: 1,
+      })
+      const exec = rows[0]?.executar
+      if (!exec) return setErro(`O relato #${id} não tem o recorte do Executar.`)
+      if (aplicar(exec)) setAberto(false)
+    } catch (e) {
+      setErro((e as Error).message)
     }
   }
 
@@ -1449,15 +1542,48 @@ function Importar({ onCarregar }: { onCarregar: (e: EstadoLancamento) => void })
               </button>
             </div>
 
-            {recentes?.length === 0 && (
+            {recentes && recentes.length === 0 && relatos.length === 0 && (
               <p className="text-[11px] text-zinc-600">
-                Nenhum Executar concluído na fila de solicitações.
+                Nenhum Executar concluído na fila de solicitações, nem relato de Executar.
               </p>
             )}
 
-            {recentes && recentes.length > 0 && (
+            {recentes && (recentes.length > 0 || relatos.length > 0) && (
               <ul className="border border-zinc-800 rounded-lg divide-y divide-zinc-800 max-h-56 overflow-y-auto">
-                {recentes.map((r) => (
+                {[
+                  // Os relatos entram na MESMA lista, pela data: para quem
+                  // procura "aquele Executar de ontem", a origem não importa.
+                  ...relatos.map((rel) => ({
+                    quando: rel.criado_em,
+                    el: (
+                      <li key={`relato-${rel.id}`}>
+                        <button
+                          onClick={() => void abrirRelato(rel.id)}
+                          className="w-full text-left px-3 py-2 hover:bg-zinc-900 transition-colors"
+                          title={rel.motivos
+                            .map((m) => `${ROTULO_MOTIVO[m.tipo] ?? m.tipo}: ${m.referencia || m.codigo}${m.detalhe ? ` — ${m.detalhe}` : ''}`)
+                            .join('\n')}
+                        >
+                          <div className="flex flex-wrap items-baseline gap-x-2 text-xs">
+                            <span className="font-mono text-zinc-300">R{rel.id}</span>
+                            <span className="text-zinc-400">{rel.usuario || '—'}</span>
+                            <span className="text-zinc-600">
+                              {new Date(rel.criado_em).toLocaleString('pt-BR')}
+                            </span>
+                            <span className="text-[10px] uppercase tracking-wide px-1.5 rounded bg-amber-900/60 text-amber-300">
+                              relato
+                            </span>
+                          </div>
+                          <div className="text-[11px] text-zinc-500 break-words">
+                            {resumoDoRelato(rel)}
+                          </div>
+                        </button>
+                      </li>
+                    ),
+                  })),
+                  ...recentes.map((r) => ({
+                    quando: r.criado_em,
+                    el: (
                   <li key={r.id}>
                     <button
                       onClick={() => {
@@ -1480,7 +1606,11 @@ function Importar({ onCarregar }: { onCarregar: (e: EstadoLancamento) => void })
                       </div>
                     </button>
                   </li>
-                ))}
+                    ),
+                  })),
+                ]
+                  .sort((a, b) => (Date.parse(b.quando) || 0) - (Date.parse(a.quando) || 0))
+                  .map((x) => x.el)}
               </ul>
             )}
 

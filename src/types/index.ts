@@ -128,6 +128,10 @@ export interface Config {
   itensPath: string
   // usuario vai no payload de escrita; o fluxo valida quem pode gravar.
   usuario: string
+
+  // URL do fluxo do PA que busca um usuário no diretório da empresa. Recebe
+  // { usuario: "<username>@<tenant>" }. Opcional: vazia, a busca não aparece.
+  usuariosPaUrl?: string
 }
 
 // ── Análise de itens para registro ──────────────────────────────────────────

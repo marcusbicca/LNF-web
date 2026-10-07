@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useApp } from '../context/AppContext'
 import { QuemPediu } from '../components/QuemPediu'
 import { SupabaseService } from '../services/supabase'
+import { buscarUsuarioNoFluxo, nomeDaResposta, tenantDoUsuario } from '../services/usuariosPa'
+import type { CentrosJson } from '../utils/empresa'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Cadastros — CRUD manual de fornecedores, usuários, centros e empresas,
@@ -407,6 +409,7 @@ const ENTIDADES: EntityConfig[] = [
           tol_valor_total: Number(r.tol_valor_total ?? 0),
           tol_valor_item: Number(r.tol_valor_item ?? 0),
           preco_com_ipi: !!r.preco_com_ipi,
+          tenant: String(r.tenant ?? ''),
         },
       }))
     },
@@ -419,6 +422,7 @@ const ENTIDADES: EntityConfig[] = [
           tol_valor_total: Number(data.tol_valor_total) || 0,
           tol_valor_item: Number(data.tol_valor_item) || 0,
           preco_com_ipi: !!data.preco_com_ipi,
+          tenant: String(data.tenant ?? '').trim().replace(/^@/, '') || null,
         },
         'codigo',
       )
@@ -426,12 +430,13 @@ const ENTIDADES: EntityConfig[] = [
         await svc.deletarLinha('empresas', `codigo=eq.${encodeURIComponent(oldKey)}`)
     },
     remove: (svc, key) => svc.deletarLinha('empresas', `codigo=eq.${encodeURIComponent(key)}`),
-    blank: () => ({ nome: '', tol_valor_total: 2, tol_valor_item: 0.5, preco_com_ipi: false }),
+    blank: () => ({ nome: '', tol_valor_total: 2, tol_valor_item: 0.5, preco_com_ipi: false, tenant: '' }),
     fields: () => [
       { path: 'nome', label: 'Nome', type: 'text' },
       { path: 'tol_valor_total', label: 'Tolerância valor TOTAL da NF (R$)', type: 'number' },
       { path: 'tol_valor_item', label: 'Tolerância valor por ITEM (R$)', type: 'number' },
       { path: 'preco_com_ipi', label: 'Preço com IPI', type: 'boolean' },
+      { path: 'tenant', label: 'Tenant do diretório (ex.: grupofleury.com.br)', type: 'text' },
     ],
   },
 ]
@@ -443,7 +448,7 @@ function dirOf(p: string): string {
 }
 
 export function Cadastros() {
-  const { config } = useApp()
+  const { config, centros } = useApp()
 
   const [entId, setEntId] = useState<EntityConfig['id']>('fornecedores')
   const ent = useMemo(() => ENTIDADES.find(e => e.id === entId)!, [entId])
@@ -476,16 +481,20 @@ export function Cadastros() {
 
   // Empresas cadastradas — para o <select> de empresa do centro (a coluna tem
   // FK, então oferecer as opções evita erro de FK por digitação).
-  const [empresaOpcoes, setEmpresaOpcoes] = useState<Array<{ codigo: string; nome: string }>>([])
+  const [empresaOpcoes, setEmpresaOpcoes] = useState<Array<{ codigo: string; nome: string; tenant: string }>>([])
   useEffect(() => {
     if (!svc) return
     let vivo = true
     svc
-      .lerLinhas('empresas', { select: 'codigo,nome', order: 'codigo' })
+      .lerLinhas('empresas', { select: 'codigo,nome,tenant', order: 'codigo' })
       .then(rows => {
         if (vivo)
           setEmpresaOpcoes(
-            rows.map(r => ({ codigo: String(r.codigo ?? ''), nome: String(r.nome ?? '') })),
+            rows.map(r => ({
+              codigo: String(r.codigo ?? ''),
+              nome: String(r.nome ?? ''),
+              tenant: String(r.tenant ?? ''),
+            })),
           )
       })
       .catch(() => {
@@ -952,6 +961,17 @@ export function Cadastros() {
               />
             )}
 
+            {ent.id === 'usuarios' && config?.usuariosPaUrl?.trim() && (
+              <BuscaDiretorio
+                url={config.usuariosPaUrl.trim()}
+                username={form.key}
+                centros={asList(form.data.centros)}
+                centrosJson={centros}
+                tenants={Object.fromEntries(empresaOpcoes.map(e => [e.codigo, e.tenant]))}
+                onNome={n => setCampo('nome', n)}
+              />
+            )}
+
             {ent.fields(entries).map(f => (
               <Campo
                 key={f.path}
@@ -1243,6 +1263,77 @@ function Campo({
         onChange={e => onChange(e.target.value)}
         className="w-full bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-green-500"
       />
+    </div>
+  )
+}
+
+// ── Busca no diretório (fluxo do PA de usuários) ─────────────────────────────
+// Envia { usuario: "<username>@<tenant>" }; o tenant vem da empresa do usuário
+// (primeiro centro → empresa → empresas.tenant).
+function BuscaDiretorio(props: {
+  url: string
+  username: string
+  centros: string[]
+  centrosJson: CentrosJson
+  tenants: Record<string, string>
+  onNome: (n: string) => void
+}) {
+  const { tenant } = tenantDoUsuario(props.centros, props.centrosJson, props.tenants)
+  const alvo = props.username.trim() ? `${props.username.trim()}@${tenant}` : ''
+  const [busy, setBusy] = useState(false)
+  const [resp, setResp] = useState<unknown>(null)
+  const [erro, setErro] = useState<string | null>(null)
+
+  useEffect(() => {
+    setResp(null)
+    setErro(null)
+  }, [alvo])
+
+  async function buscar() {
+    setBusy(true)
+    setErro(null)
+    setResp(null)
+    try {
+      setResp(await buscarUsuarioNoFluxo(props.url, props.username, tenant))
+    } catch (e) {
+      setErro(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const nome = nomeDaResposta(resp)
+  return (
+    <div className="rounded-lg border border-zinc-700 p-2.5 space-y-2 text-sm">
+      <div className="flex items-center gap-2">
+        <span className="text-zinc-400 text-xs flex-1 truncate font-mono">{alvo || 'informe o usuário'}</span>
+        <button
+          onClick={() => void buscar()}
+          disabled={busy || !alvo}
+          className="px-3 py-1 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-40 rounded text-xs"
+        >
+          {busy ? 'Buscando...' : 'Buscar no diretório'}
+        </button>
+      </div>
+      {erro && <p className="text-red-300 text-xs">❌ {erro}</p>}
+      {resp != null && (
+        <>
+          {nome && (
+            <div className="flex items-center gap-2">
+              <span className="flex-1">{nome}</span>
+              <button
+                onClick={() => props.onNome(nome)}
+                className="px-3 py-1 bg-green-700 hover:bg-green-600 rounded text-xs"
+              >
+                Usar como nome
+              </button>
+            </div>
+          )}
+          <pre className="text-[11px] text-zinc-400 max-h-40 overflow-auto whitespace-pre-wrap">
+            {typeof resp === 'string' ? resp : JSON.stringify(resp, null, 2)}
+          </pre>
+        </>
+      )}
     </div>
   )
 }
