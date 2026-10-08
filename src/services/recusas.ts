@@ -73,3 +73,60 @@ export function pareceAlmoxarifado(r: Recusa): boolean {
     .replace(/[̀-ͯ]/g, '')
   return alvo.includes('almox')
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Banimentos (migration 0079 no LNF-Coreon)
+//
+// Quem acumula recusas em 10 min é banido pela própria registrar_recusa: a
+// lnf-api passa a recusar TUDO em nome dele, sem prazo. Só o dono libera, aqui.
+// É por USUÁRIO, não por IP — o parque inteiro sai pelo mesmo endereço.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface Banimento {
+  usuario: string
+  banidoEm: string | null
+  portao: string | null
+  motivo: string | null
+  recusas: number | null
+  /** 'automatico' (excesso de tentativas) | 'manual' (banido pelo dono). */
+  origem: string
+}
+
+export async function carregarBanimentos(svc: SupabaseService): Promise<Banimento[]> {
+  const rows = await svc.lerLinhas('banimentos', {
+    select: '*',
+    order: 'banido_em.desc',
+    limit: 500,
+  })
+  return rows.map((r) => ({
+    usuario: String(r.usuario ?? '').trim().toLowerCase(),
+    banidoEm: r.banido_em ? String(r.banido_em) : null,
+    portao: r.portao != null ? String(r.portao) : null,
+    motivo: r.motivo != null ? String(r.motivo) : null,
+    recusas: r.recusas != null ? Number(r.recusas) : null,
+    origem: String(r.origem ?? 'automatico'),
+  }))
+}
+
+// As duas exigem nível 3 com a chave de dev (a lnf-api confere).
+export async function liberarBanimento(svc: SupabaseService, usuario: string): Promise<void> {
+  await svc.rpc('liberar_banimento', { p_usuario: usuario })
+}
+
+export async function banirUsuario(svc: SupabaseService, usuario: string, motivo: string): Promise<void> {
+  await svc.rpc('banir_usuario', { p_usuario: usuario, p_motivo: motivo })
+}
+
+// Busca por usuário, nome, cargo ou setor — sem acento e sem caixa.
+export function semAcento(s: string): string {
+  return s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+}
+
+export function recusaCasa(r: Recusa, q: string): boolean {
+  if (!q) return true
+  const alvo = semAcento(
+    [r.usuario, r.nomeCompleto, r.cargo, r.setor, r.localTrabalho, r.cidade, r.op, r.motivo]
+      .filter(Boolean).join(' '),
+  )
+  return alvo.includes(semAcento(q))
+}
