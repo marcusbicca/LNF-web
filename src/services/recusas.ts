@@ -73,3 +73,97 @@ export function pareceAlmoxarifado(r: Recusa): boolean {
     .replace(/[̀-ͯ]/g, '')
   return alvo.includes('almox')
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Banimentos (migration 0079 no LNF-Coreon)
+//
+// Quem acumula recusas em 10 min é banido pela própria registrar_recusa: a
+// lnf-api passa a recusar TUDO em nome dele, sem prazo. Só o dono libera, aqui.
+// É por USUÁRIO, não por IP — o parque inteiro sai pelo mesmo endereço.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface Banimento {
+  usuario: string
+  banidoEm: string | null
+  portao: string | null
+  motivo: string | null
+  recusas: number | null
+  /** 'automatico' (excesso de tentativas) | 'manual' (banido pelo dono). */
+  origem: string
+}
+
+export async function carregarBanimentos(svc: SupabaseService): Promise<Banimento[]> {
+  const rows = await svc.lerLinhas('banimentos', {
+    select: '*',
+    order: 'banido_em.desc',
+    limit: 500,
+  })
+  return rows.map((r) => ({
+    usuario: String(r.usuario ?? '').trim().toLowerCase(),
+    banidoEm: r.banido_em ? String(r.banido_em) : null,
+    portao: r.portao != null ? String(r.portao) : null,
+    motivo: r.motivo != null ? String(r.motivo) : null,
+    recusas: r.recusas != null ? Number(r.recusas) : null,
+    origem: String(r.origem ?? 'automatico'),
+  }))
+}
+
+// As duas exigem nível 3 com a chave de dev (a lnf-api confere).
+export async function liberarBanimento(svc: SupabaseService, usuario: string): Promise<void> {
+  await svc.rpc('liberar_banimento', { p_usuario: usuario })
+}
+
+export async function banirUsuario(svc: SupabaseService, usuario: string, motivo: string): Promise<void> {
+  await svc.rpc('banir_usuario', { p_usuario: usuario, p_motivo: motivo })
+}
+
+// Busca por usuário, nome, cargo ou setor — sem acento e sem caixa.
+export function semAcento(s: string): string {
+  return s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+}
+
+export function recusaCasa(r: Recusa, q: string): boolean {
+  if (!q) return true
+  const alvo = semAcento(
+    [r.usuario, r.nomeCompleto, r.cargo, r.setor, r.localTrabalho, r.cidade, r.op, r.motivo]
+      .filter(Boolean).join(' '),
+  )
+  return alvo.includes(semAcento(q))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// De qual computador veio (tabela dispositivos, migration 0076)
+//
+// O host 2.x manda quem é a máquina em todo op:PAYLOAD — inclusive quando é
+// recusado. Assim a recusa de alguém fora do cadastro vem com nome do PC,
+// domínio e versão do host. Só nível 3 lê.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface Dispositivo {
+  usuario: string
+  maquina: string | null
+  dominio: string | null
+  tenant: string | null
+  versaoHost: string | null
+  aberturas: number
+  ultimoEm: string | null
+  assinaturaOk: boolean
+}
+
+export async function carregarDispositivos(svc: SupabaseService): Promise<Dispositivo[]> {
+  const rows = await svc.lerLinhas('dispositivos', {
+    select: 'usuario,maquina,dominio,tenant,versao_host,aberturas,ultimo_em,assinatura_ok',
+    order: 'ultimo_em.desc',
+    limit: 1000,
+  })
+  return rows.map((r) => ({
+    usuario: String(r.usuario ?? '').trim().toLowerCase(),
+    maquina: r.maquina != null ? String(r.maquina) : null,
+    dominio: r.dominio != null ? String(r.dominio) : null,
+    tenant: r.tenant != null ? String(r.tenant) : null,
+    versaoHost: r.versao_host != null ? String(r.versao_host) : null,
+    aberturas: Number(r.aberturas ?? 0) || 0,
+    ultimoEm: r.ultimo_em ? String(r.ultimo_em) : null,
+    assinaturaOk: r.assinatura_ok === true,
+  }))
+}

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useApp } from '../context/AppContext'
 import { QuemPediu } from '../components/QuemPediu'
 import { SupabaseService } from '../services/supabase'
-import { buscarUsuarioNoFluxo, nomeDaResposta, tenantDoUsuario } from '../services/usuariosPa'
+import { buscarUsuarioNoFluxo, lerPessoa, tenantDoUsuario } from '../services/usuariosPa'
 import type { CentrosJson } from '../utils/empresa'
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1302,7 +1302,7 @@ function BuscaDiretorio(props: {
     }
   }
 
-  const nome = nomeDaResposta(resp)
+  const pessoa = lerPessoa(resp)
   return (
     <div className="rounded-lg border border-zinc-700 p-2.5 space-y-2 text-sm">
       <div className="flex items-center gap-2">
@@ -1316,23 +1316,26 @@ function BuscaDiretorio(props: {
         </button>
       </div>
       {erro && <p className="text-red-300 text-xs">❌ {erro}</p>}
-      {resp != null && (
-        <>
-          {nome && (
-            <div className="flex items-center gap-2">
-              <span className="flex-1">{nome}</span>
-              <button
-                onClick={() => props.onNome(nome)}
-                className="px-3 py-1 bg-green-700 hover:bg-green-600 rounded text-xs"
-              >
-                Usar como nome
-              </button>
+      {resp != null && !pessoa && (
+        <p className="text-amber-300 text-xs">
+          Não encontrado no diretório. Confira o usuário e a empresa (o tenant enviado está acima).
+        </p>
+      )}
+      {pessoa && (
+        <div className="flex items-start gap-2">
+          <div className="flex-1 min-w-0">
+            <div className="font-medium">{pessoa.nome}</div>
+            <div className="text-xs text-zinc-400">
+              {[pessoa.cargo, pessoa.setor, pessoa.local].filter(Boolean).join(' · ') || '—'}
             </div>
-          )}
-          <pre className="text-[11px] text-zinc-400 max-h-40 overflow-auto whitespace-pre-wrap">
-            {typeof resp === 'string' ? resp : JSON.stringify(resp, null, 2)}
-          </pre>
-        </>
+          </div>
+          <button
+            onClick={() => props.onNome(pessoa.nome)}
+            className="px-3 py-1 bg-green-700 hover:bg-green-600 rounded text-xs shrink-0"
+          >
+            Usar como nome
+          </button>
+        </div>
       )}
     </div>
   )

@@ -2,7 +2,10 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useApp } from '../context/AppContext'
 import { SupabaseService } from '../services/supabase'
 import { carregarAtividade, desde, type Atividade, type AtividadeUsuario } from '../services/presenca'
-import { carregarRecusas, pareceAlmoxarifado, type Recusa } from '../services/recusas'
+import {
+  banirUsuario, carregarBanimentos, carregarDispositivos, carregarRecusas, liberarBanimento,
+  pareceAlmoxarifado, recusaCasa, semAcento, type Banimento, type Dispositivo, type Recusa,
+} from '../services/recusas'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Presença — quem usa a ferramenta, quanto, e quem nunca usou
@@ -83,31 +86,102 @@ function csv(at: Atividade): string {
 }
 
 // Cada portão pede uma reação diferente, então cada um tem sua cor e sua
-// legenda. 'cadastro' é o único que é alarme — os outros são permissão faltando.
+// legenda. 'cadastro' é o alarme principal; os de chave errada também são
+// tentativa. Os outros são permissão faltando ou o parque desligado.
 const PORTOES: Record<string, { rotulo: string; cor: string; borda: string }> = {
-  cadastro: { rotulo: 'fora do cadastro', cor: 'text-red-300',   borda: 'border-red-900 bg-red-950/30' },
-  internet: { rotulo: 'MeuDanfe pago',    cor: 'text-amber-300', borda: 'border-amber-900/60 bg-amber-950/20' },
-  escrita:  { rotulo: 'escrita barrada',  cor: 'text-blue-300',  borda: 'border-blue-900/60 bg-blue-950/20' },
+  cadastro:           { rotulo: 'fora do cadastro',   cor: 'text-red-300',    borda: 'border-red-900 bg-red-950/30' },
+  'dev-chave-errada': { rotulo: 'chave de dev errada', cor: 'text-red-300',   borda: 'border-red-900 bg-red-950/30' },
+  publicar:           { rotulo: 'publicação recusada', cor: 'text-red-300',   borda: 'border-red-900 bg-red-950/30' },
+  'dev-sem-chave':    { rotulo: 'nível 3 sem chave',  cor: 'text-orange-300', borda: 'border-orange-900/60 bg-orange-950/20' },
+  inativo:            { rotulo: 'usuário inativo',    cor: 'text-orange-300', borda: 'border-orange-900/60 bg-orange-950/20' },
+  arquivo:            { rotulo: 'arquivo barrado',    cor: 'text-orange-300', borda: 'border-orange-900/60 bg-orange-950/20' },
+  internet:           { rotulo: 'MeuDanfe pago',      cor: 'text-amber-300',  borda: 'border-amber-900/60 bg-amber-950/20' },
+  escrita:            { rotulo: 'escrita barrada',    cor: 'text-blue-300',   borda: 'border-blue-900/60 bg-blue-950/20' },
+  parque:             { rotulo: 'parque desligado',   cor: 'text-zinc-300',   borda: 'border-zinc-800 bg-zinc-900/40' },
+  bloqueado:          { rotulo: 'parque bloqueado',   cor: 'text-zinc-300',   borda: 'border-zinc-800 bg-zinc-900/40' },
+}
+
+// Ordem por gravidade: tentativa primeiro, depois permissão faltando. Portão
+// que não esteja aqui (um novo na lnf-api) aparece no fim, nunca some.
+const ORDEM = ['cadastro', 'dev-chave-errada', 'publicar', 'dev-sem-chave', 'inativo', 'arquivo',
+  'internet', 'escrita', 'parque', 'bloqueado']
+
+function Computadores({ lista }: { lista: Dispositivo[] | undefined }) {
+  if (!lista || lista.length === 0) return null
+  return (
+    <div className="mt-0.5 text-[11px] text-zinc-400">
+      {lista.slice(0, 3).map((d, i) => (
+        <div key={i}>
+          PC <span className="font-mono text-zinc-300">{d.maquina || '?'}</span>
+          {d.dominio && <span> · {d.dominio}</span>}
+          {d.versaoHost && <span> · host {d.versaoHost}</span>}
+          <span className="text-zinc-500"> · {d.aberturas}× · {desde(d.ultimoEm) ?? '—'}</span>
+          {!d.assinaturaOk && <span className="text-amber-400"> · assinatura não conferiu</span>}
+        </div>
+      ))}
+      {lista.length > 3 && <div className="text-zinc-600">+{lista.length - 3} computador(es)</div>}
+    </div>
+  )
 }
 
 function PainelRecusas({
   recusas,
+  banidos,
+  dispositivos,
   carregando,
   onRecarregar,
+  onLiberar,
+  onBanir,
 }: {
   recusas: Recusa[] | null
+  banidos: Banimento[] | null
+  dispositivos: Dispositivo[] | null
   carregando: boolean
   onRecarregar: () => void
+  onLiberar: (usuario: string) => Promise<void>
+  onBanir: (usuario: string) => Promise<void>
 }) {
-  // Ordem por gravidade: intruso primeiro, depois permissão faltando.
-  const ordem = ['cadastro', 'internet', 'escrita']
-  const grupos = useMemo(() => {
-    const g: Record<string, Recusa[]> = { cadastro: [], internet: [], escrita: [] }
-    for (const r of recusas ?? []) (g[r.portao] ??= []).push(r)
-    return g
-  }, [recusas])
+  const [busca, setBusca] = useState('')
+  const [agindo, setAgindo] = useState<string | null>(null)
+  const [erroAcao, setErroAcao] = useState<string | null>(null)
 
-  if (!recusas || recusas.length === 0) {
+  const banidoSet = useMemo(() => new Set((banidos ?? []).map((b) => b.usuario)), [banidos])
+  const pcs = useMemo(() => {
+    const m: Record<string, Dispositivo[]> = {}
+    for (const d of dispositivos ?? []) (m[d.usuario] ??= []).push(d)
+    return m
+  }, [dispositivos])
+
+  const filtradas = useMemo(
+    () => (recusas ?? []).filter((r) => recusaCasa(r, busca.trim())),
+    [recusas, busca],
+  )
+  const banidosFiltrados = useMemo(() => {
+    const q = semAcento(busca.trim())
+    return (banidos ?? []).filter((b) => !q || semAcento(b.usuario).includes(q))
+  }, [banidos, busca])
+
+  const portoes = useMemo(() => {
+    const g: Record<string, Recusa[]> = {}
+    for (const r of filtradas) (g[r.portao] ??= []).push(r)
+    const extras = Object.keys(g).filter((p) => !ORDEM.includes(p)).sort()
+    return [...ORDEM, ...extras].filter((p) => g[p]?.length).map((p) => ({ p, lista: g[p] }))
+  }, [filtradas])
+
+  const agir = async (usuario: string, fn: (u: string) => Promise<void>) => {
+    setAgindo(usuario)
+    setErroAcao(null)
+    try {
+      await fn(usuario)
+    } catch (e) {
+      setErroAcao(e instanceof Error ? e.message : String(e))
+    } finally {
+      setAgindo(null)
+    }
+  }
+
+  const vazio = (!recusas || recusas.length === 0) && (!banidos || banidos.length === 0)
+  if (vazio) {
     return (
       <div className="border border-zinc-800 rounded p-3 flex items-center gap-2">
         <span className="text-sm text-zinc-500">
@@ -124,33 +198,85 @@ function PainelRecusas({
     )
   }
 
-  const intrusos = grupos.cadastro.length
+  const intrusos = (recusas ?? []).filter((r) => r.portao === 'cadastro').length
 
   return (
     <div className="border border-zinc-800 rounded">
-      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 px-3 py-2 border-b border-zinc-800">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-3 py-2 border-b border-zinc-800">
         <h3 className="text-sm font-semibold">Tentativas de acesso negadas</h3>
-        {intrusos > 0 && (
-          <span className="text-xs text-red-300">
-            {intrusos} de fora do cadastro
-          </span>
+        {(banidos?.length ?? 0) > 0 && (
+          <span className="text-xs text-red-300">{banidos!.length} banido(s)</span>
         )}
+        {intrusos > 0 && (
+          <span className="text-xs text-red-300/80">{intrusos} de fora do cadastro</span>
+        )}
+        <input
+          value={busca}
+          onChange={(e) => setBusca(e.target.value)}
+          placeholder="buscar usuário, nome, cargo, setor…"
+          className="ml-auto w-full sm:w-64 px-2 py-1 text-sm rounded bg-zinc-900 border border-zinc-700"
+        />
         <button
           onClick={onRecarregar}
           disabled={carregando}
-          className="ml-auto text-xs text-zinc-400 hover:text-zinc-200 disabled:opacity-50"
+          className="text-xs text-zinc-400 hover:text-zinc-200 disabled:opacity-50"
         >
           {carregando ? 'atualizando…' : '↻ atualizar'}
         </button>
       </div>
 
+      {erroAcao && (
+        <div className="mx-2 mt-2 text-xs text-red-400 bg-red-950/40 border border-red-900 rounded p-2">
+          {erroAcao}
+        </div>
+      )}
+
       <div className="p-2 space-y-3">
-        {ordem.filter((p) => grupos[p]?.length).map((p) => {
+        {/* Banidos primeiro: é o que pede decisão do dono. */}
+        {banidosFiltrados.length > 0 && (
+          <div className="space-y-1">
+            <div className="text-[11px] uppercase tracking-wide text-red-400 px-1">
+              Banidos — só voltam se você liberar
+            </div>
+            {banidosFiltrados.map((b) => (
+              <div
+                key={`ban:${b.usuario}`}
+                className="rounded border border-red-700 bg-red-950/50 px-3 py-2 text-sm"
+              >
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                  <span className="font-mono">{b.usuario}</span>
+                  <span className="text-[10px] px-1 rounded bg-red-900 text-red-100">
+                    {b.origem === 'manual' ? 'banido por você' : 'banido automático'}
+                  </span>
+                  <span className="text-xs text-zinc-400">
+                    {desde(b.banidoEm) ?? '—'}
+                  </span>
+                  <button
+                    onClick={() => void agir(b.usuario, onLiberar)}
+                    disabled={agindo === b.usuario}
+                    className="ml-auto px-2 py-0.5 text-xs rounded bg-zinc-800 hover:bg-zinc-700 disabled:opacity-50"
+                  >
+                    {agindo === b.usuario ? 'liberando…' : 'liberar'}
+                  </button>
+                </div>
+                {b.motivo && (
+                  <div className="mt-0.5 text-[11px] text-zinc-400 font-mono">
+                    {b.portao ? `${b.portao} — ` : ''}{b.motivo}
+                  </div>
+                )}
+                <Computadores lista={pcs[b.usuario]} />
+              </div>
+            ))}
+          </div>
+        )}
+
+        {portoes.map(({ p, lista }) => {
           const meta = PORTOES[p] ?? { rotulo: p, cor: 'text-zinc-300', borda: 'border-zinc-800' }
           return (
             <div key={p} className="space-y-1">
-              {grupos[p].map((r) => {
+              {lista.map((r) => {
                 const almox = p === 'cadastro' && pareceAlmoxarifado(r)
+                const banido = banidoSet.has(r.usuario)
                 return (
                   <div
                     key={`${r.portao}:${r.usuario}`}
@@ -161,6 +287,9 @@ function PainelRecusas({
                       <span className={`text-[10px] px-1 rounded bg-zinc-900 ${meta.cor}`}>
                         {meta.rotulo}
                       </span>
+                      {banido && (
+                        <span className="text-[10px] px-1 rounded bg-red-900 text-red-100">banido</span>
+                      )}
                       {almox && (
                         <span className="text-[10px] px-1 rounded bg-green-900/50 text-green-300">
                           almoxarifado?
@@ -169,6 +298,15 @@ function PainelRecusas({
                       <span className="ml-auto text-xs text-zinc-500">
                         {r.total}× · última {desde(r.ultimaEm) ?? '—'}
                       </span>
+                      {!banido && (
+                        <button
+                          onClick={() => void agir(r.usuario, onBanir)}
+                          disabled={agindo === r.usuario}
+                          className="text-[11px] text-red-400 hover:text-red-300 disabled:opacity-50"
+                        >
+                          {agindo === r.usuario ? 'banindo…' : 'banir'}
+                        </button>
+                      )}
                     </div>
 
                     {/* Perfil do diretório — só o portão 'cadastro' tem. */}
@@ -200,12 +338,17 @@ function PainelRecusas({
                         {r.op}{r.motivo ? ` — ${r.motivo}` : ''}
                       </div>
                     )}
+                    <Computadores lista={pcs[r.usuario]} />
                   </div>
                 )
               })}
             </div>
           )
         })}
+
+        {busca.trim() && portoes.length === 0 && banidosFiltrados.length === 0 && (
+          <div className="text-sm text-zinc-500 px-1">Nenhuma recusa para “{busca.trim()}”.</div>
+        )}
       </div>
     </div>
   )
@@ -225,6 +368,8 @@ export function Presenca() {
   // tela — quem tentou entrar e não pôde. Por isso carregam sozinhas ao abrir,
   // ao contrário da varredura do histórico, que espera o clique.
   const [recusas, setRecusas] = useState<Recusa[] | null>(null)
+  const [banidos, setBanidos] = useState<Banimento[] | null>(null)
+  const [dispositivos, setDispositivos] = useState<Dispositivo[] | null>(null)
   const [carregandoRec, setCarregandoRec] = useState(false)
 
   const carregarRec = useCallback(async () => {
@@ -232,7 +377,15 @@ export function Presenca() {
     setCarregandoRec(true)
     try {
       const svc = new SupabaseService(config)
-      setRecusas(await carregarRecusas(svc))
+      const [rec, ban, pcs] = await Promise.all([
+        carregarRecusas(svc),
+        // Sem a 0079 / 0076 no banco: essas partes só não aparecem.
+        carregarBanimentos(svc).catch(() => [] as Banimento[]),
+        carregarDispositivos(svc).catch(() => [] as Dispositivo[]),
+      ])
+      setRecusas(rec)
+      setBanidos(ban)
+      setDispositivos(pcs)
     } catch {
       // Uma recusa que não carrega não pode esconder a presença: falha calada,
       // o painel só não aparece.
@@ -243,6 +396,20 @@ export function Presenca() {
   }, [config])
 
   useEffect(() => { void carregarRec() }, [carregarRec])
+
+  const liberar = useCallback(async (usuario: string) => {
+    if (!config) return
+    if (!window.confirm(`Liberar ${usuario}? Ele volta a poder tentar acessar.`)) return
+    await liberarBanimento(new SupabaseService(config), usuario)
+    await carregarRec()
+  }, [config, carregarRec])
+
+  const banir = useCallback(async (usuario: string) => {
+    if (!config) return
+    if (!window.confirm(`Banir ${usuario}? Tudo em nome dele passa a ser recusado até você liberar.`)) return
+    await banirUsuario(new SupabaseService(config), usuario, 'banido pelo LNF-web')
+    await carregarRec()
+  }, [config, carregarRec])
 
   const carregar = useCallback(async () => {
     if (!config) return
@@ -329,8 +496,12 @@ export function Presenca() {
 
       <PainelRecusas
         recusas={recusas}
+        banidos={banidos}
+        dispositivos={dispositivos}
         carregando={carregandoRec}
         onRecarregar={() => void carregarRec()}
+        onLiberar={liberar}
+        onBanir={banir}
       />
 
       {!at && !carregando && !erro && (
