@@ -130,3 +130,40 @@ export function recusaCasa(r: Recusa, q: string): boolean {
   )
   return alvo.includes(semAcento(q))
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// De qual computador veio (tabela dispositivos, migration 0076)
+//
+// O host 2.x manda quem é a máquina em todo op:PAYLOAD — inclusive quando é
+// recusado. Assim a recusa de alguém fora do cadastro vem com nome do PC,
+// domínio e versão do host. Só nível 3 lê.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface Dispositivo {
+  usuario: string
+  maquina: string | null
+  dominio: string | null
+  tenant: string | null
+  versaoHost: string | null
+  aberturas: number
+  ultimoEm: string | null
+  assinaturaOk: boolean
+}
+
+export async function carregarDispositivos(svc: SupabaseService): Promise<Dispositivo[]> {
+  const rows = await svc.lerLinhas('dispositivos', {
+    select: 'usuario,maquina,dominio,tenant,versao_host,aberturas,ultimo_em,assinatura_ok',
+    order: 'ultimo_em.desc',
+    limit: 1000,
+  })
+  return rows.map((r) => ({
+    usuario: String(r.usuario ?? '').trim().toLowerCase(),
+    maquina: r.maquina != null ? String(r.maquina) : null,
+    dominio: r.dominio != null ? String(r.dominio) : null,
+    tenant: r.tenant != null ? String(r.tenant) : null,
+    versaoHost: r.versao_host != null ? String(r.versao_host) : null,
+    aberturas: Number(r.aberturas ?? 0) || 0,
+    ultimoEm: r.ultimo_em ? String(r.ultimo_em) : null,
+    assinaturaOk: r.assinatura_ok === true,
+  }))
+}

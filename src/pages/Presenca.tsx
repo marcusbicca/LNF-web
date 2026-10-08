@@ -3,8 +3,8 @@ import { useApp } from '../context/AppContext'
 import { SupabaseService } from '../services/supabase'
 import { carregarAtividade, desde, type Atividade, type AtividadeUsuario } from '../services/presenca'
 import {
-  banirUsuario, carregarBanimentos, carregarRecusas, liberarBanimento, pareceAlmoxarifado,
-  recusaCasa, semAcento, type Banimento, type Recusa,
+  banirUsuario, carregarBanimentos, carregarDispositivos, carregarRecusas, liberarBanimento,
+  pareceAlmoxarifado, recusaCasa, semAcento, type Banimento, type Dispositivo, type Recusa,
 } from '../services/recusas'
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -106,9 +106,28 @@ const PORTOES: Record<string, { rotulo: string; cor: string; borda: string }> = 
 const ORDEM = ['cadastro', 'dev-chave-errada', 'publicar', 'dev-sem-chave', 'inativo', 'arquivo',
   'internet', 'escrita', 'parque', 'bloqueado']
 
+function Computadores({ lista }: { lista: Dispositivo[] | undefined }) {
+  if (!lista || lista.length === 0) return null
+  return (
+    <div className="mt-0.5 text-[11px] text-zinc-400">
+      {lista.slice(0, 3).map((d, i) => (
+        <div key={i}>
+          PC <span className="font-mono text-zinc-300">{d.maquina || '?'}</span>
+          {d.dominio && <span> · {d.dominio}</span>}
+          {d.versaoHost && <span> · host {d.versaoHost}</span>}
+          <span className="text-zinc-500"> · {d.aberturas}× · {desde(d.ultimoEm) ?? '—'}</span>
+          {!d.assinaturaOk && <span className="text-amber-400"> · assinatura não conferiu</span>}
+        </div>
+      ))}
+      {lista.length > 3 && <div className="text-zinc-600">+{lista.length - 3} computador(es)</div>}
+    </div>
+  )
+}
+
 function PainelRecusas({
   recusas,
   banidos,
+  dispositivos,
   carregando,
   onRecarregar,
   onLiberar,
@@ -116,6 +135,7 @@ function PainelRecusas({
 }: {
   recusas: Recusa[] | null
   banidos: Banimento[] | null
+  dispositivos: Dispositivo[] | null
   carregando: boolean
   onRecarregar: () => void
   onLiberar: (usuario: string) => Promise<void>
@@ -126,6 +146,11 @@ function PainelRecusas({
   const [erroAcao, setErroAcao] = useState<string | null>(null)
 
   const banidoSet = useMemo(() => new Set((banidos ?? []).map((b) => b.usuario)), [banidos])
+  const pcs = useMemo(() => {
+    const m: Record<string, Dispositivo[]> = {}
+    for (const d of dispositivos ?? []) (m[d.usuario] ??= []).push(d)
+    return m
+  }, [dispositivos])
 
   const filtradas = useMemo(
     () => (recusas ?? []).filter((r) => recusaCasa(r, busca.trim())),
@@ -239,6 +264,7 @@ function PainelRecusas({
                     {b.portao ? `${b.portao} — ` : ''}{b.motivo}
                   </div>
                 )}
+                <Computadores lista={pcs[b.usuario]} />
               </div>
             ))}
           </div>
@@ -312,6 +338,7 @@ function PainelRecusas({
                         {r.op}{r.motivo ? ` — ${r.motivo}` : ''}
                       </div>
                     )}
+                    <Computadores lista={pcs[r.usuario]} />
                   </div>
                 )
               })}
@@ -342,6 +369,7 @@ export function Presenca() {
   // ao contrário da varredura do histórico, que espera o clique.
   const [recusas, setRecusas] = useState<Recusa[] | null>(null)
   const [banidos, setBanidos] = useState<Banimento[] | null>(null)
+  const [dispositivos, setDispositivos] = useState<Dispositivo[] | null>(null)
   const [carregandoRec, setCarregandoRec] = useState(false)
 
   const carregarRec = useCallback(async () => {
@@ -349,13 +377,15 @@ export function Presenca() {
     setCarregandoRec(true)
     try {
       const svc = new SupabaseService(config)
-      const [rec, ban] = await Promise.all([
+      const [rec, ban, pcs] = await Promise.all([
         carregarRecusas(svc),
-        // Banco sem a 0079 ainda: a lista de banidos só não aparece.
+        // Sem a 0079 / 0076 no banco: essas partes só não aparecem.
         carregarBanimentos(svc).catch(() => [] as Banimento[]),
+        carregarDispositivos(svc).catch(() => [] as Dispositivo[]),
       ])
       setRecusas(rec)
       setBanidos(ban)
+      setDispositivos(pcs)
     } catch {
       // Uma recusa que não carrega não pode esconder a presença: falha calada,
       // o painel só não aparece.
@@ -467,6 +497,7 @@ export function Presenca() {
       <PainelRecusas
         recusas={recusas}
         banidos={banidos}
+        dispositivos={dispositivos}
         carregando={carregandoRec}
         onRecarregar={() => void carregarRec()}
         onLiberar={liberar}
