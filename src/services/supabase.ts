@@ -40,6 +40,11 @@
 
 import { registrarChamadaPa, marcarErroPa } from './paLog'
 
+// Versão do LNF-web, embutida pelo Vite a partir do package.json (ver
+// vite.config.ts: define __APP_VERSION__). Carimbada em 'cli' nas chamadas.
+declare const __APP_VERSION__: string
+const APP_VERSION = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '0.0.0'
+
 export interface FileResult {
   data: unknown
   sha: string
@@ -409,6 +414,10 @@ export class SupabaseService {
   // esconde justamente os dois corpos.
   private async pa(payload: Record<string, unknown>): Promise<string> {
     this.assertConfigurado()
+    // Carimba a versão do LNF-web em 'cli', como o Coreon faz no módulo. Começa
+    // com "web " de propósito: a lnf-api identifica o LNF-web por esse prefixo e
+    // NÃO o submete ao mínimo de versão do Coreon (é ferramenta do dono).
+    if (payload.cli === undefined) payload = { ...payload, cli: `web ${APP_VERSION}` }
     const corpo = JSON.stringify(payload)
     const t0 = Date.now()
 
