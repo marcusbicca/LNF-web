@@ -213,6 +213,19 @@ function acessosVazio(chaves: string[]): Record<string, boolean> {
   return Object.fromEntries(chaves.map(a => [a, false]))
 }
 
+// Um PEDIDO de criação de usuário (solicitacao_usuario) é input não-confiável:
+// ele vem de um cliente qualquer do parque. Nunca deixamos um pedido conceder
+// uma chave FORA do catálogo curado — flags de serviço/privilégio como
+// 'publicarBuild' não têm checkbox, então entravam invisíveis no spread e o dev
+// aprovava sem ver ("gente indevida podia publicar"). Concessão dessas é só por
+// dev, à mão, direto no usuário — nunca herdada de um pedido.
+function soCatalogo(acessos: Record<string, boolean>): Record<string, boolean> {
+  const out: Record<string, boolean> = {}
+  for (const k of Object.keys(acessos ?? {}))
+    if (ACESSOS_CONHECIDOS.includes(k)) out[k] = !!acessos[k]
+  return out
+}
+
 // ── definição das entidades ──────────────────────────────────────────────────
 const ENTIDADES: EntityConfig[] = [
   {
@@ -625,7 +638,7 @@ export function Cadastros() {
         nivelAdm: Number(sol.nivel_adm) || 0,
         acessos: {
           ...acessosVazio(chavesDeAcesso(entries)),
-          ...((sol.acessos as Record<string, boolean>) ?? {}),
+          ...soCatalogo((sol.acessos as Record<string, boolean>) ?? {}),
         },
         ativo: true,
       }
