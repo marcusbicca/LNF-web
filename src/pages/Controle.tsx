@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useApp } from '../context/AppContext'
 import { SupabaseService } from '../services/supabase'
+import { SolicitacoesService, type Solicitacao } from '../services/solicitacoes'
 
 type Row = Record<string, unknown>
 
@@ -40,6 +41,10 @@ const STATUS_INFO: Record<Status, { rotulo: string; cor: string; aviso: string }
 export function Controle() {
   const { config } = useApp()
   const svc = useMemo(() => (config ? new SupabaseService(config) : null), [config])
+  const solSvc = useMemo(
+    () => (svc ? new SolicitacoesService(svc, config?.usuario ?? '') : null),
+    [svc, config],
+  )
 
   const [row, setRow] = useState<Row | null>(null)
   const [form, setForm] = useState<Row>({})
@@ -47,6 +52,72 @@ export function Controle() {
   const [salvando, setSalvando] = useState(false)
   const [erro, setErro] = useState<string | null>(null)
   const [status, setStatus] = useState<string | null>(null)
+
+  // Ordens permanentes de encerramento (solicitações eternas).
+  const [eternas, setEternas] = useState<Solicitacao[]>([])
+  const [alvoEnc, setAlvoEnc] = useState('')
+  const [todosEnc, setTodosEnc] = useState(false)
+  const [encBusy, setEncBusy] = useState(false)
+  const [encMsg, setEncMsg] = useState<string | null>(null)
+
+  const carregarEternas = useCallback(async () => {
+    if (!solSvc) return
+    try {
+      setEternas(await solSvc.listarEternas())
+    } catch {
+      /* lista é conveniência; falha não derruba o painel */
+    }
+  }, [solSvc])
+
+  useEffect(() => {
+    void carregarEternas()
+  }, [carregarEternas])
+
+  async function criarEncerramento() {
+    if (!solSvc) return
+    const alvo = alvoEnc.trim().toLowerCase()
+    if (!todosEnc && !alvo) {
+      setEncMsg('⚠️ Informe o usuário-alvo (ou marque "todos").')
+      return
+    }
+    const rotuloAlvo = todosEnc ? 'TODOS' : alvo
+    const confirmar = window.prompt(
+      `⚠️ Ordem PERMANENTE de encerrar o Coreon de ${todosEnc ? 'TODOS os usuários' : alvo}.\n\n` +
+        'A máquina-alvo vai abrir e fechar em seguida, a cada ciclo, até você PARAR esta ordem.\n\n' +
+        `Para confirmar, digite exatamente: ${rotuloAlvo}`,
+    )
+    if (confirmar !== rotuloAlvo) {
+      setEncMsg('⚠️ Confirmação não bateu — nada foi criado.')
+      return
+    }
+    setEncBusy(true)
+    setEncMsg(null)
+    try {
+      await solSvc.criar({ acao: 'shutdown', eterna: true, destinatario: todosEnc ? undefined : alvo })
+      setAlvoEnc('')
+      setTodosEnc(false)
+      setEncMsg('✅ Ordem de encerramento criada.')
+      await carregarEternas()
+    } catch (e) {
+      setEncMsg(`❌ ${(e as Error).message}`)
+    } finally {
+      setEncBusy(false)
+    }
+  }
+
+  async function pararEncerramento(id: number) {
+    if (!solSvc) return
+    setEncBusy(true)
+    setEncMsg(null)
+    try {
+      await solSvc.pararEterna(id)
+      await carregarEternas()
+    } catch (e) {
+      setEncMsg(`❌ ${(e as Error).message}`)
+    } finally {
+      setEncBusy(false)
+    }
+  }
 
   const carregar = useCallback(async () => {
     if (!svc) return
@@ -102,7 +173,12 @@ export function Controle() {
         status: statusAtual,
         versao_xlam: strOrNull(form.versao_xlam),
         versao_xlsm: strOrNull(form.versao_xlsm),
+        // O .exe escreve OS DOIS campos com o mesmo valor: 'versao_exe' (legado,
+        // informativo) e 'versao_minima' — que é quem DISPARA a auto-atualização
+        // (AppControlService.PrecisaAtualizar compara o AssemblyVersion com a
+        // mínima). Editar só o versao_exe, como era antes, nunca forçava update.
         versao_exe: strOrNull(form.versao_exe),
+        versao_minima: strOrNull(form.versao_minima),
         data_lancamento: strOrNull(form.data_lancamento),
         mensagem_inicial: strOrNull(form.mensagem_inicial),
         nfs_por_segundo: numOrNull(form.nfs_por_segundo),
@@ -195,8 +271,19 @@ export function Controle() {
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               <CampoTexto label="xlam" value={form.versao_xlam} onChange={v => set('versao_xlam', v)} mono />
               <CampoTexto label="xlsm" value={form.versao_xlsm} onChange={v => set('versao_xlsm', v)} mono />
-              <CampoTexto label="exe (Coreon)" value={form.versao_exe} onChange={v => set('versao_exe', v)} mono />
+              <CampoTexto
+                label="Coreon (.exe)"
+                value={form.versao_exe}
+                onChange={v => { set('versao_exe', v); set('versao_minima', v) }}
+                mono
+              />
             </div>
+            <p className="text-[11px] text-zinc-500 mt-1">
+              O campo do Coreon grava <span className="font-mono">versao_exe</span> e{' '}
+              <span className="font-mono">versao_minima</span> com o mesmo valor. É a{' '}
+              <span className="font-mono">versao_minima</span> que dispara a auto-atualização
+              das máquinas abaixo dela.
+            </p>
           </Secao>
 
           {/* ── Operação ── */}
@@ -267,6 +354,70 @@ export function Controle() {
               />
               Canal remoto sempre ativo
             </label>
+          </Secao>
+
+          {/* ── Encerramento permanente (ordem eterna) ── */}
+          <Secao
+            titulo="Encerramento permanente"
+            subtitulo="Manda o Coreon do alvo abrir e fechar em seguida, a cada ciclo, até você parar. Para versões antigas que você não quer rodando."
+          >
+            <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto] gap-2 items-end">
+              <div>
+                <label className="block text-[11px] uppercase tracking-wide text-zinc-500 mb-1">
+                  Usuário-alvo (username do Windows)
+                </label>
+                <input
+                  value={alvoEnc}
+                  onChange={e => setAlvoEnc(e.target.value)}
+                  disabled={todosEnc}
+                  placeholder="ex.: mv3.guilhermea"
+                  className="w-full bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:border-green-500 disabled:opacity-40"
+                />
+              </div>
+              <button
+                onClick={() => void criarEncerramento()}
+                disabled={encBusy}
+                className="bg-red-600 hover:bg-red-500 disabled:opacity-40 text-white text-sm font-semibold px-3 py-2 rounded-lg transition-colors"
+              >
+                Criar ordem
+              </button>
+            </div>
+            <label className="flex items-center gap-2 text-sm text-red-300 cursor-pointer mt-1">
+              <input
+                type="checkbox"
+                checked={todosEnc}
+                onChange={e => setTodosEnc(e.target.checked)}
+                className="w-4 h-4 accent-red-500"
+              />
+              Todos os usuários (perigoso — derruba o parque inteiro em laço)
+            </label>
+
+            {eternas.length > 0 && (
+              <div className="mt-2 space-y-1">
+                <p className="text-[11px] uppercase tracking-wide text-zinc-500">Ordens ativas</p>
+                {eternas.map(s => (
+                  <div key={s.id} className="flex items-center justify-between gap-2 bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-1.5 text-sm">
+                    <span className="truncate">
+                      <span className="font-mono text-zinc-300">{s.acao}</span>
+                      <span className="text-zinc-500"> → {s.destinatario ?? 'TODOS'}</span>
+                    </span>
+                    <button
+                      onClick={() => void pararEncerramento(s.id)}
+                      disabled={encBusy}
+                      className="text-xs px-2 py-1 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-40 rounded text-zinc-300 shrink-0"
+                    >
+                      Parar
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {encMsg && (
+              <p className={`text-xs mt-1 ${encMsg.startsWith('✅') ? 'text-green-400' : encMsg.startsWith('⚠️') ? 'text-yellow-400' : 'text-red-400'}`}>
+                {encMsg}
+              </p>
+            )}
           </Secao>
 
           {status && (

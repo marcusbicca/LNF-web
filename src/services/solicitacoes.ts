@@ -55,6 +55,8 @@ export interface Solicitacao {
   acao: string
   payload: unknown
   sessao_id: string | null
+  /** Ordem permanente: fica 'aberta' e é entregue ao alvo a cada ciclo, sem consumir. */
+  eterna: boolean
   /** Agrupa os passos de uma sequência. null = envio avulso. */
   lote: string | null
   /** Quem foi impedido de pegar esta. Ver NovaSolicitacao.excluidos. */
@@ -80,6 +82,13 @@ export interface NovaSolicitacao {
   sapSenha?: string
   /** Vale para TODOS os usuários e fica em pé até ser encerrada. */
   universal?: boolean
+  /**
+   * Ordem PERMANENTE: fica 'aberta' e é entregue ao alvo a cada ciclo, SEM
+   * consumir (não é marcada como concluída). Use para um comando que deve valer
+   * enquanto existir — ex.: encerrar uma versão antiga. Mire com destinatario
+   * (ou excluidos); sem destinatario é "todos, para sempre". Pare com pararEterna.
+   */
+  eterna?: boolean
   /**
    * Quem NÃO pode pegar. O avesso do destinatario: aquele diz "só fulano",
    * este diz "qualquer um MENOS fulano".
@@ -162,6 +171,7 @@ function toSolicitacao(r: Row): Solicitacao {
     acao: String(r.acao ?? ''),
     payload: r.payload ?? null,
     sessao_id: (r.sessao_id as string) ?? null,
+    eterna: r.eterna === true,
     lote: (r.lote as string) ?? null,
     excluidos: (r.excluidos as string[]) ?? null,
     sap_usuario: (r.sap_usuario as string) ?? null,
@@ -241,22 +251,25 @@ export class SolicitacoesService {
    * 'criarEAguardar'.
    */
   async criar(n: NovaSolicitacao): Promise<void> {
-    // Universal não tem sessão: ela roda em TODAS as máquinas, e sessão é
+    // Universal e eterna não têm sessão: rodam em várias máquinas, e sessão é
     // estado que sobrevive entre passos numa só. O banco recusa a combinação
     // (constraint), então recusar aqui dá um erro melhor.
-    if (n.universal && n.sessaoId)
-      throw new Error('Solicitação universal não pode ter sessão — ela roda em todas as máquinas.')
-    if (!n.universal && !n.sessaoId)
+    const semDono = n.universal || n.eterna
+    if (semDono && n.sessaoId)
+      throw new Error('Solicitação universal/eterna não pode ter sessão — ela roda em várias máquinas.')
+    if (!semDono && !n.sessaoId)
       throw new Error('Toda solicitação precisa de sessaoId — é por ele que a resposta é encontrada.')
 
     const linha: Row = {
       criado_por: this.usuario || null,
       acao: n.acao,
       payload: n.payload ?? {},
-      // 'aberta' é o estado de quem circula; 'pendente' é o de quem tem um dono.
-      status: n.universal ? 'aberta' : 'pendente',
+      // 'aberta' é o estado de quem circula (universal/eterna); 'pendente' é o
+      // de quem tem um dono.
+      status: semDono ? 'aberta' : 'pendente',
     }
     if (n.universal) linha.universal = true
+    if (n.eterna) linha.eterna = true
     if (n.sessaoId) linha.sessao_id = n.sessaoId
     if (n.destinatario) linha.destinatario = n.destinatario
     if (n.sapUsuario) linha.sap_usuario = n.sapUsuario
@@ -452,6 +465,27 @@ export class SolicitacoesService {
   /** O "seu comando": tira a universal de circulação. */
   async encerrarUniversal(id: number): Promise<void> {
     await this.svc.rpc('encerrar_universal', { p_id: id })
+  }
+
+  // ── ordens permanentes (eternas) ─────────────────────────────────────────
+
+  /** As eternas ainda 'aberta' (as que estão sendo entregues ao alvo a cada ciclo). */
+  async listarEternas(): Promise<Solicitacao[]> {
+    const rows = await this.svc.lerLinhas(VIEW_LEITURA, {
+      filtros: 'eterna=is.true&status=eq.aberta',
+      order: 'id.desc',
+      limit: 50,
+    })
+    return rows.map(toSolicitacao)
+  }
+
+  /**
+   * Para uma eterna: tira de 'aberta' (vira 'expirada'), e o alvo deixa de
+   * recebê-la no próximo ciclo. Escrita por id na própria tabela — exige nível
+   * 3 (o mesmo gate de abrir o canal remoto).
+   */
+  async pararEterna(id: number): Promise<void> {
+    await this.svc.salvarLinha(TABELA_ESCRITA, { id, status: 'expirada', eterna: false }, 'id')
   }
 
   /** A mais recente de uma ação dentro de uma sessão, ou null. */
