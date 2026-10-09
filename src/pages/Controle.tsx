@@ -179,6 +179,10 @@ export function Controle() {
         // mínima). Editar só o versao_exe, como era antes, nunca forçava update.
         versao_exe: strOrNull(form.versao_exe),
         versao_minima: strOrNull(form.versao_minima),
+        // Versão-alvo do HOST (a casca fina). Dispara o re-provisionamento do
+        // host: quando sobe acima do que a máquina gravou, ela baixa o
+        // LNF-Coreon.zip e troca o próprio .exe. É campo só-dev (APP_CONTROL_SO_DEV).
+        versao_host: strOrNull(form.versao_host),
         data_lancamento: strOrNull(form.data_lancamento),
         mensagem_inicial: strOrNull(form.mensagem_inicial),
         nfs_por_segundo: numOrNull(form.nfs_por_segundo),
@@ -268,7 +272,7 @@ export function Controle() {
             titulo="Versões-alvo"
             subtitulo="O parque se auto-atualiza para estas versões. Mude só ao publicar uma release."
           >
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
               <CampoTexto label="xlam" value={form.versao_xlam} onChange={v => set('versao_xlam', v)} mono />
               <CampoTexto label="xlsm" value={form.versao_xlsm} onChange={v => set('versao_xlsm', v)} mono />
               <CampoTexto
@@ -277,12 +281,14 @@ export function Controle() {
                 onChange={v => { set('versao_exe', v); set('versao_minima', v) }}
                 mono
               />
+              <CampoTexto label="host" value={form.versao_host} onChange={v => set('versao_host', v)} mono />
             </div>
             <p className="text-[11px] text-zinc-500 mt-1">
-              O campo do Coreon grava <span className="font-mono">versao_exe</span> e{' '}
-              <span className="font-mono">versao_minima</span> com o mesmo valor. É a{' '}
-              <span className="font-mono">versao_minima</span> que dispara a auto-atualização
-              das máquinas abaixo dela.
+              <span className="font-mono">Coreon (.exe)</span> grava <span className="font-mono">versao_exe</span>{' '}
+              e <span className="font-mono">versao_minima</span> (esta é quem dispara a atualização do módulo
+              nas máquinas abaixo dela). <span className="font-mono">host</span> é a{' '}
+              <span className="font-mono">versao_host</span> — dispara a troca do <span className="font-mono">.exe</span>{' '}
+              do host quando sobe acima do que a máquina já gravou.
             </p>
           </Secao>
 
