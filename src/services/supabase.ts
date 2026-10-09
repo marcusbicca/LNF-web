@@ -1030,6 +1030,15 @@ export class SupabaseService {
     await this.del(table, filtro)
   }
 
+  // UPDATE (PATCH) por filtro: só toca em linha que JÁ existe. Diferente do
+  // salvarLinha (upsert), que com merge-duplicates monta uma tupla de INSERT e
+  // esbarra no NOT NULL de colunas não enviadas (ex.: 'acao') antes de resolver
+  // o conflito — criando lixo ou falhando. Para mudar campos de uma linha
+  // conhecida pelo id, é este o caminho.
+  async atualizarLinha(table: string, filtro: string, valores: Row): Promise<void> {
+    await this.update(table, filtro, valores)
+  }
+
   /**
    * Chama uma função do Postgres (POST /rest/v1/rpc/<funcao>) pelo fluxo.
    *

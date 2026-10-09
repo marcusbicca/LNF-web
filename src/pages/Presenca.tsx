@@ -59,7 +59,7 @@ function faixa(a: AtividadeUsuario): { rotulo: string; cor: string } {
 
 function csv(at: Atividade): string {
   const linhas = [
-    ['usuario', 'nome', 'nivel', 'situacao', 'presenca_em', 'ultima_acao_em',
+    ['usuario', 'nome', 'nivel', 'situacao', 'versao_cli', 'presenca_em', 'ultima_acao_em',
      'ultima_acao', 'total', 'em_7d', 'em_30d', 'falhas', 'primeira_acao_em',
      'por_acao'].join(';'),
   ]
@@ -70,6 +70,7 @@ function csv(at: Atividade): string {
       u.nome,
       String(u.nivelAdm),
       faixa(u).rotulo,
+      u.versaoCli ?? '',
       u.presencaEm ?? '',
       u.vistoEm ?? '',
       u.ultimaAcao ?? '',
@@ -566,6 +567,22 @@ export function Presenca() {
                       <span className="text-[10px] px-1 rounded bg-zinc-800 text-zinc-400">
                         nível {u.nivelAdm}
                       </span>
+                    )}
+                    {/* Versão do cliente. Sem versão = cliente antigo (nunca
+                        carimbou cli) — destacado, pois é o que esta coluna acha. */}
+                    {u.presencaEm && (
+                      u.versaoCli ? (
+                        <span className="text-[10px] px-1 rounded bg-zinc-800 text-zinc-400 font-mono">
+                          v{u.versaoCli}
+                        </span>
+                      ) : (
+                        <span
+                          className="text-[10px] px-1 rounded bg-amber-900/60 text-amber-300"
+                          title="O cliente nunca enviou versão — versão ANTIGA do Coreon."
+                        >
+                          sem versão
+                        </span>
+                      )
                     )}
 
                     <span className={`ml-auto text-xs ${f.cor}`}>{f.rotulo}</span>

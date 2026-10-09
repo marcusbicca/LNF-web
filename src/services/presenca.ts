@@ -68,6 +68,12 @@ export interface AtividadeUsuario {
   vistoEm: string | null
   ultimaAcao: string | null
   primeiraEm: string | null
+  /**
+   * Última versão do cliente (campo cli) que a Edge Function viu, de
+   * usuarios.versao_cli. null = nunca enviou versão = cliente ANTIGO (é o que
+   * esta coluna existe para achar). Ver migração 0083 e marcar_presenca.
+   */
+  versaoCli: string | null
   total: number
   /** Ações nos últimos 7 e 30 dias — é o que separa "ativo" de "já foi". */
   em7: number
@@ -156,7 +162,7 @@ export async function carregarAtividade(svc: SupabaseService): Promise<Atividade
 
   // ── os cadastrados entram TODOS, inclusive os de zero ─────────────────────
   const cadastrados = await svc.lerLinhas('usuarios', {
-    select: 'username,nome,nivel_adm,visto_em',
+    select: 'username,nome,nivel_adm,visto_em,versao_cli',
     order: 'username.asc',
   })
 
@@ -175,6 +181,7 @@ export async function carregarAtividade(svc: SupabaseService): Promise<Atividade
     vistoEm: null,
     ultimaAcao: null,
     primeiraEm: null,
+    versaoCli: null,
     total: 0,
     em7: 0,
     em30: 0,
@@ -185,11 +192,10 @@ export async function carregarAtividade(svc: SupabaseService): Promise<Atividade
   for (const r of cadastrados) {
     const u = String(r.username ?? '').trim().toLowerCase()
     if (!u) continue
-    porUsuario.set(
-      u,
-      criar(u, String(r.nome ?? ''), Number(r.nivel_adm ?? 0),
-            r.visto_em ? String(r.visto_em) : null),
-    )
+    const a = criar(u, String(r.nome ?? ''), Number(r.nivel_adm ?? 0),
+                    r.visto_em ? String(r.visto_em) : null)
+    a.versaoCli = r.versao_cli ? String(r.versao_cli) : null
+    porUsuario.set(u, a)
   }
 
   const contagens = new Map<string, Map<string, number>>()

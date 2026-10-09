@@ -8,6 +8,7 @@ import {
   novaSessaoId,
   TTL_SESSAO_MIN,
   type Catalogo,
+  type CatalogoHistorico,
   type Pipe,
   type Universal,
   type Execucao,
@@ -302,6 +303,10 @@ export function Solicitacoes() {
 
   // O que saiu desta tela agora — não o que voltou. Ver a nota do 'enviar'.
   const [enviadas, setEnviadas] = useState<Enviada[]>([])
+
+  // Versões de catálogo achadas no histórico de respostas, e qual está escolhida.
+  const [catsHist, setCatsHist] = useState<CatalogoHistorico[]>([])
+  const [verSel, setVerSel] = useState<string>('')
 
   const pipe: Pipe | null = useMemo(
     () => catalogo?.pipes.find((p) => p.acao === acao) ?? null,
@@ -603,6 +608,46 @@ export function Solicitacoes() {
     } finally {
       setOcupado(null)
     }
+  }
+
+  // ── escolher a versão das pipes pelo histórico de respostas ───────────────
+  //
+  // Cada versão do Coreon pode ter pipes/campos diferentes, e o parque roda
+  // mais de uma ao mesmo tempo. Em vez de ficar preso ao catálogo da última
+  // sessão, isto varre os 'iniciar_sessao' concluídos, junta UMA versão de cada
+  // (a mais recente) e deixa o usuário escolher — para montar o comando na
+  // versão que a máquina-alvo realmente roda.
+  async function buscarVersoesCatalogo() {
+    if (!sol) return
+    setErro(null)
+    setOcupado('versoes')
+    setProgresso('Procurando versões de catálogo no histórico…')
+    try {
+      const lista = await sol.catalogosDoHistorico(50)
+      setCatsHist(lista)
+      setProgresso(
+        lista.length
+          ? `${lista.length} versão(ões) de catálogo no histórico. Escolha uma.`
+          : 'Nenhum iniciar_sessao concluído com catálogo no histórico.',
+      )
+    } catch (e) {
+      setErro((e as Error).message)
+      setProgresso('')
+    } finally {
+      setOcupado(null)
+    }
+  }
+
+  function escolherVersaoCatalogo(versao: string) {
+    setVerSel(versao)
+    const achado = catsHist.find((c) => (c.versaoCoreon || '(sem versão)') === versao)
+    if (!achado) return
+    setCatalogo(achado.catalogo)
+    // Trocar de versão muda as pipes/campos: zera a seleção para não deixar um
+    // campo que só existia na versão anterior pendurado no formulário.
+    setAcao('')
+    setValores({})
+    setMarcados({})
   }
 
   // Monta o payload do formulário atual. Compartilhado por enviar e enfileirar,
@@ -911,6 +956,36 @@ export function Solicitacoes() {
               </span>
             )}
           </label>
+
+          {/* Escolher a versão das pipes pelo que existe no histórico de respostas */}
+          <div className="space-y-1">
+            <button
+              type="button"
+              onClick={() => void buscarVersoesCatalogo()}
+              disabled={ocupado !== null}
+              className="text-xs text-zinc-300 underline disabled:opacity-50"
+            >
+              Escolher versão do catálogo pelo histórico
+            </button>
+            {catsHist.length > 0 && (
+              <select
+                value={verSel}
+                onChange={(e) => escolherVersaoCatalogo(e.target.value)}
+                className="w-full bg-zinc-900 border border-zinc-700 rounded px-2 py-1 text-sm"
+              >
+                <option value="">— versão do Coreon —</option>
+                {catsHist.map((c) => {
+                  const chave = c.versaoCoreon || '(sem versão)'
+                  return (
+                    <option key={chave} value={chave}>
+                      {chave} · {c.catalogo.pipes.length} pipes ·{' '}
+                      {c.maquina || c.executor || c.sessaoId || '—'}
+                    </option>
+                  )
+                })}
+              </select>
+            )}
+          </div>
 
           <input
             value={destinatario}
