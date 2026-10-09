@@ -526,6 +526,41 @@ export class SolicitacoesService {
   }
 
   /**
+   * As versões de catálogo que dá para montar a partir do histórico de
+   * respostas: lê os últimos 'iniciar_sessao' concluídos, extrai o catálogo de
+   * cada um e guarda UMA entrada por versão do Coreon (a mais recente, porque
+   * 'listar' já vem id.desc). É o que alimenta o seletor de versão na tela —
+   * assim o usuário monta um comando para a versão que a máquina-alvo roda, e
+   * não só para a última sessão aberta. Mais nova primeiro.
+   */
+  async catalogosDoHistorico(limite = 50): Promise<CatalogoHistorico[]> {
+    const rows = await this.listar({
+      limit: limite,
+      filtros: 'acao=eq.iniciar_sessao&status=eq.concluida',
+    })
+
+    const porVersao = new Map<string, CatalogoHistorico>()
+    for (const r of rows) {
+      const cat = lerCatalogo(r.resultado)
+      if (!cat || cat.pipes.length === 0) continue
+      const chave = cat.versaoCoreon || '(sem versão)'
+      if (porVersao.has(chave)) continue // id.desc → o primeiro visto é o mais novo
+      porVersao.set(chave, {
+        versaoCoreon: cat.versaoCoreon,
+        catalogo: cat,
+        quando: r.terminado_em || r.criado_em,
+        sessaoId: cat.sessaoId || r.sessao_id || '',
+        executor: cat.executor || r.executor || '',
+        maquina: cat.maquina || r.maquina || '',
+      })
+    }
+
+    return [...porVersao.values()].sort((a, b) =>
+      compararVersaoCoreon(b.versaoCoreon, a.versaoCoreon),
+    )
+  }
+
+  /**
    * As sessões que ainda podem estar VIVAS, mais recente primeiro.
    *
    * Antes isto era histórico: toda sessão já vista na tabela ficava na lista
@@ -625,6 +660,42 @@ export interface Catalogo {
   loginSap: string
   camposGlobais: CampoPipe[]
   pipes: Pipe[]
+}
+
+/**
+ * Um catálogo encontrado no histórico de respostas, com de onde ele veio. É o
+ * que a tela lista para o usuário ESCOLHER a versão das pipes: cada versão do
+ * Coreon pode ter um conjunto de pipes/campos diferente, e o parque roda mais
+ * de uma versão ao mesmo tempo. 'quando' e 'sessaoId' servem para a tela dizer
+ * se a sessão daquela resposta ainda está viva (o catálogo em si não vence).
+ */
+export interface CatalogoHistorico {
+  versaoCoreon: string
+  catalogo: Catalogo
+  quando: string
+  sessaoId: string
+  executor: string
+  maquina: string
+}
+
+/**
+ * Compara duas versões "a.b.c.d" numericamente. Faltando componente conta 0, e
+ * o que não é número vai para o fim (versão vazia = a mais antiga).
+ */
+export function compararVersaoCoreon(a: string, b: string): number {
+  const pa = (a || '').trim()
+  const pb = (b || '').trim()
+  if (!pa && !pb) return 0
+  if (!pa) return -1
+  if (!pb) return 1
+  const na = pa.split('.').map((x) => parseInt(x, 10) || 0)
+  const nb = pb.split('.').map((x) => parseInt(x, 10) || 0)
+  const n = Math.max(na.length, nb.length)
+  for (let i = 0; i < n; i++) {
+    const d = (na[i] ?? 0) - (nb[i] ?? 0)
+    if (d !== 0) return d < 0 ? -1 : 1
+  }
+  return 0
 }
 
 function camposDe(obj: unknown): CampoPipe[] {
