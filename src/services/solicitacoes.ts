@@ -485,7 +485,11 @@ export class SolicitacoesService {
    * 3 (o mesmo gate de abrir o canal remoto).
    */
   async pararEterna(id: number): Promise<void> {
-    await this.svc.salvarLinha(TABELA_ESCRITA, { id, status: 'expirada', eterna: false }, 'id')
+    // UPDATE por filtro, não upsert: o upsert (merge-duplicates) monta uma
+    // tupla de INSERT e bate no NOT NULL de 'acao' ANTES de resolver o conflito
+    // pelo id — criava uma linha-lixo (acao null) e devolvia 23502. O PATCH por
+    // id só altera a linha existente.
+    await this.svc.atualizarLinha(TABELA_ESCRITA, `id=eq.${id}`, { status: 'expirada', eterna: false })
   }
 
   /** A mais recente de uma ação dentro de uma sessão, ou null. */
