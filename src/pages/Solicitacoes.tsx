@@ -11,6 +11,7 @@ import {
   type Pipe,
   type Universal,
   type Execucao,
+  type Solicitacao,
 } from '../services/solicitacoes'
 import { TabelasSap } from '../components/TabelasSap'
 import { carregarUsuarios, conferir } from '../services/destinatarios'
@@ -283,6 +284,9 @@ export function Solicitacoes() {
     () => lerRascunho().fila ?? [],
   )
   const [universais, setUniversais] = useState<Universal[]>([])
+  // Ordens PERMANENTES (eternas). Diferente da universal, não são consumidas:
+  // ficam 'aberta' e o alvo as recebe a cada ciclo até você mandar parar.
+  const [eternas, setEternas] = useState<Solicitacao[]>([])
 
   // ── o detalhe por máquina ────────────────────────────────────────────────
   //
@@ -404,6 +408,16 @@ export function Solicitacoes() {
     void carregarExecucoes(expandidas)
   }, [sol, carregarExecucoes, expandidas])
 
+  const carregarEternas = useCallback(async () => {
+    if (!sol) return
+    try {
+      setEternas(await sol.listarEternas())
+    } catch {
+      // Sem a coluna 'eterna' (0082) a seção some; o resto da tela continua.
+      setEternas([])
+    }
+  }, [sol])
+
   function alternarDetalhe(id: number) {
     setExpandidas((atual) => {
       if (atual.includes(id)) return atual.filter((x) => x !== id)
@@ -415,7 +429,8 @@ export function Solicitacoes() {
   useEffect(() => {
     void carregarSessoes()
     void carregarUniversais()
-  }, [carregarSessoes, carregarUniversais])
+    void carregarEternas()
+  }, [carregarSessoes, carregarUniversais, carregarEternas])
 
   // ── recarregar é um BOTÃO, não um relógio ────────────────────────────────
   //
@@ -432,7 +447,7 @@ export function Solicitacoes() {
   async function recarregar() {
     setRecarregando(true)
     try {
-      await Promise.all([carregarSessoes(), carregarUniversais()])
+      await Promise.all([carregarSessoes(), carregarUniversais(), carregarEternas()])
     } finally {
       setRecarregando(false)
     }
@@ -692,6 +707,58 @@ export function Solicitacoes() {
     try {
       await sol.encerrarUniversal(id)
       await carregarUniversais()
+    } catch (e) {
+      setErro((e as Error).message)
+    } finally {
+      setOcupado(null)
+    }
+  }
+
+  // ── eterna: ordem permanente, entregue a cada ciclo, sem consumir ─────────
+  //
+  // A universal roda UMA vez por máquina e acaba. A eterna NÃO acaba: fica em
+  // pé e o alvo a recebe toda vez que acorda, até você mandar parar. É o caso
+  // de "encerrar a versão X sempre que ela abrir". Mira no destinatário desta
+  // tela (se preenchido); vazio = TODOS, para sempre — por isso confirma.
+  async function enviarEterna() {
+    if (!sol || !prontoParaEnviar || !acaoEfetiva) return
+    const alvo = destinatario.trim().toLowerCase()
+    if (!alvo) {
+      const ok = window.confirm(
+        `Criar ordem PERMANENTE "${acaoEfetiva}" para TODAS as máquinas?\n\n` +
+          'Ela fica em pé e é entregue a cada ciclo, sem parar, até você removê-la ' +
+          'aqui embaixo. Deixe o destinatário preenchido se quiser mirar em uma só.',
+      )
+      if (!ok) return
+    }
+    setErro(null)
+    setOcupado('eterna')
+    setProgresso('Criando ordem permanente…')
+    try {
+      await sol.criar({
+        acao: acaoEfetiva,
+        payload: payloadAtual(),
+        eterna: true,
+        destinatario: alvo || undefined,
+      })
+      limparFormulario()
+      setProgresso('')
+      void carregarEternas()
+    } catch (e) {
+      setErro((e as Error).message)
+      setProgresso('')
+    } finally {
+      setOcupado(null)
+    }
+  }
+
+  async function pararEternaUI(id: number) {
+    if (!sol) return
+    setErro(null)
+    setOcupado('parar-eterna')
+    try {
+      await sol.pararEterna(id)
+      await carregarEternas()
     } catch (e) {
       setErro((e as Error).message)
     } finally {
@@ -1101,6 +1168,23 @@ export function Solicitacoes() {
               {ocupado === 'universal' ? 'Criando…' : 'Enviar a todos'}
             </button>
 
+            <button
+              onClick={enviarEterna}
+              disabled={!!ocupado || !prontoParaEnviar}
+              title={
+                'Ordem PERMANENTE: fica em pé e é entregue a cada ciclo, SEM ser ' +
+                'consumida, até você removê-la. Mira no destinatário (se preenchido); ' +
+                'vazio = todos, para sempre.'
+              }
+              className="ml-2 bg-red-900 hover:bg-red-800 disabled:opacity-40 rounded px-3 py-1.5 text-sm"
+            >
+              {ocupado === 'eterna'
+                ? 'Criando…'
+                : destinatario.trim()
+                  ? `Eterno p/ ${destinatario.trim()}`
+                  : 'Eterno p/ todos'}
+            </button>
+
             {!sessao && prontoParaEnviar && (
               <p className="text-xs text-amber-500">Abra ou escolha uma sessão primeiro.</p>
             )}
@@ -1237,6 +1321,51 @@ export function Solicitacoes() {
                   className="bg-zinc-800 hover:bg-zinc-700 disabled:opacity-40 rounded px-3 py-1 text-xs"
                 >
                   Encerrar
+                </button>
+              </div>
+            </div>
+          ))}
+        </section>
+      )}
+
+      {/* ── ordens permanentes (eternas) ───────────────────────────────────── */}
+      {eternas.length > 0 && (
+        <section className="border border-red-900/60 rounded p-4 space-y-3">
+          <h2 className="font-semibold text-red-400">
+            Ordens permanentes ({eternas.length})
+          </h2>
+          <p className="text-xs text-zinc-500">
+            Ficam em pé e são entregues ao alvo <b>a cada ciclo, sem serem consumidas</b> —
+            ao contrário das universais, não terminam sozinhas. Remova quando não
+            quiser mais que circulem.
+          </p>
+
+          {eternas.map((e) => (
+            <div key={e.id} className="bg-zinc-900 rounded p-3 space-y-2 text-sm">
+              <div className="flex items-center gap-2">
+                <span className="text-zinc-600">#{e.id}</span>
+                <span className="font-mono">{e.acao}</span>
+                <span className="ml-auto text-xs text-zinc-500">
+                  {e.destinatario ? (
+                    <>alvo: <span className="font-mono text-zinc-300">{e.destinatario}</span></>
+                  ) : (
+                    <span className="text-red-400">todos</span>
+                  )}
+                </span>
+              </div>
+
+              <div className="flex items-center gap-3">
+                <span className="text-xs text-zinc-600 truncate flex-1" title={JSON.stringify(e.payload)}>
+                  {e.payload && typeof e.payload === 'object' && Object.keys(e.payload as object).length
+                    ? Object.keys(e.payload as object).join(', ')
+                    : '(sem campos)'}
+                </span>
+                <button
+                  onClick={() => pararEternaUI(e.id)}
+                  disabled={!!ocupado}
+                  className="bg-zinc-800 hover:bg-zinc-700 disabled:opacity-40 rounded px-3 py-1 text-xs"
+                >
+                  {ocupado === 'parar-eterna' ? 'Parando…' : 'Parar'}
                 </button>
               </div>
             </div>
