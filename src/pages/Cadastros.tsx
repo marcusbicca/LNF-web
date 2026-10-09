@@ -543,21 +543,30 @@ export function Cadastros() {
     setErro(null)
     setStatus(null)
     setSelKey(null)
-    setForm({ key: '', data: ent.blank([]) })
     try {
+      let novas: Entry[]
       if (ent.load) {
         // Entidade de tabela crua (empresas): sem arquivo legado.
         setPath('')
-        setEntries(await ent.load(svc))
+        novas = await ent.load(svc)
       } else {
         const p = pathFor(ent)
         setPath(p)
         const { data } = await svc.lerArquivo(p)
-        setEntries(ent.parse!(data))
+        novas = ent.parse!(data)
       }
+      setEntries(novas)
+      // Form em branco COM o catálogo recém-carregado — nunca blank([]). O
+      // campo é renderizado a partir das entries (que, no dev, trazem 'ativo'),
+      // então o blank TEM que ver as mesmas entries: senão o form nasce sem
+      // 'ativo', o checkbox aparece desmarcado por falta de valor, e um usuário
+      // novo é salvo SEM 'ativo' — caindo no default true da coluna. Era esse o
+      // bug: caixa desmarcada, usuário gravado como ativo.
+      setForm({ key: '', data: ent.blank(novas) })
     } catch (e) {
       setErro((e as Error).message)
       setEntries([])
+      setForm({ key: '', data: ent.blank([]) })
     } finally {
       setCarregando(false)
     }
