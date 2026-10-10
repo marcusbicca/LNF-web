@@ -198,6 +198,12 @@ function rotuloDeAcesso(k: string): string {
 // Conhecidas primeiro, na ordem curada; o que aparecer nos dados e não estiver
 // no catálogo entra depois, em ordem alfabética — para a tela não embaralhar a
 // cada carga.
+// Flags de SERVIÇO: não são permissão de pessoa e NÃO se editam pela tela. A
+// 'publicarBuild' é imutável pela escrita (a lnf-api força o valor; só a conta
+// 'github' a tem). Mantê-la fora dos checkboxes evita o dev achar que um toggle
+// aqui concede/retira publicação — não concede, e já entrou invisível uma vez.
+const FLAGS_SERVICO = new Set(['publicarBuild'])
+
 function chavesDeAcesso(entries: Entry[]): string[] {
   const vistas = new Set<string>()
   for (const e of entries) {
@@ -205,7 +211,9 @@ function chavesDeAcesso(entries: Entry[]): string[] {
     if (a && typeof a === 'object')
       for (const k of Object.keys(a as Record<string, unknown>)) vistas.add(k)
   }
-  const novas = [...vistas].filter(k => !ACESSOS_CONHECIDOS.includes(k)).sort()
+  const novas = [...vistas]
+    .filter(k => !ACESSOS_CONHECIDOS.includes(k) && !FLAGS_SERVICO.has(k))
+    .sort()
   return [...ACESSOS_CONHECIDOS, ...novas]
 }
 
