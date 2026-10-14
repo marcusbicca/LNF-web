@@ -16,6 +16,7 @@ import { Coletas } from './pages/Coletas'
 import { TermosGlobais } from './pages/TermosGlobais'
 import { Presenca } from './pages/Presenca'
 import { Foton } from './pages/Foton'
+import { CoreonLogin } from './pages/CoreonLogin'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Trocar de aba não pode apagar o trabalho
@@ -74,6 +75,7 @@ export default function App() {
         {painel('termos', <TermosGlobais />)}
         {painel('presenca', <Presenca />)}
         {painel('foton', <Foton />)}
+        {painel('coreonlogin', <CoreonLogin />)}
         {painel('config', <Configuracoes />)}
       </Layout>
     </AppProvider>
