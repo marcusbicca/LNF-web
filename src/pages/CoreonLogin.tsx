@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useApp } from '../context/AppContext'
 import { SupabaseService } from '../services/supabase'
+import { hashSenhaCoreon } from '../utils/coreonSenha'
 
 type Row = Record<string, unknown>
 
@@ -17,6 +18,10 @@ type Row = Record<string, unknown>
 //     (a máquina passa a poder definir senha e logar) ou BLOQUEIA.
 //   • senha do usuário (coreon_senha): aqui você RESETA — apaga a senha, e no
 //     próximo login o usuário define outra (a máquina segue autorizada).
+//   • cadastro DIRETO, sem esperar pedido: autoriza para um usuário qualquer
+//     máquina que já apareceu em 'dispositivos' (qualquer host 2.0.0.x que
+//     assina registra a máquina no PAYLOAD), e define a senha dele. O hash é
+//     feito no navegador, igual ao da lnf-api (utils/coreonSenha.ts).
 //
 // Todas as tabelas são dev-only no lnf-api (leitura e escrita exigem nível 3 +
 // chave de dev). Sem a chave em Configurações, a lnf-api recusa e o erro
@@ -57,6 +62,14 @@ export function CoreonLogin() {
   const [msg, setMsg] = useState<string | null>(null)
   const [ocupado, setOcupado] = useState<string | null>(null)
 
+  // Cadastro direto
+  const [dispositivos, setDispositivos] = useState<Row[]>([])
+  const [usuarios, setUsuarios] = useState<Row[]>([])
+  const [novoUsuario, setNovoUsuario] = useState('')
+  const [novoDisp, setNovoDisp] = useState('')
+  const [novaSenha, setNovaSenha] = useState('')
+  const [novaSenha2, setNovaSenha2] = useState('')
+
   const comSenha = useMemo(() => {
     const set = new Set<string>()
     for (const s of senhas) {
@@ -72,11 +85,19 @@ export function CoreonLogin() {
     setErro(null)
     setMsg(null)
     try {
-      const [ac, maq, sen] = await Promise.all([
+      const [ac, maq, sen, disp, usu] = await Promise.all([
         svc.lerLinhas('app_control', { select: 'login_obrigatorio', limit: 1 }),
         svc.lerLinhas('coreon_maquina', { order: 'solicitado_em.desc', limit: 1000 }),
         svc.lerLinhas('coreon_senha', { select: 'usuario,atualizado_em', order: 'atualizado_em.desc', limit: 1000 }),
+        svc.lerLinhas('dispositivos', {
+          select: 'id,usuario,maquina,versao_host,assinatura_ok,ultimo_em',
+          order: 'ultimo_em.desc',
+          limit: 1000,
+        }),
+        svc.lerLinhas('usuarios', { select: 'username,ativo', order: 'username.asc', limit: 1000 }),
       ])
+      setDispositivos(disp)
+      setUsuarios(usu)
       setLoginOn(ac[0]?.login_obrigatorio === true)
       // Pendentes primeiro, depois autorizadas, depois bloqueadas.
       const ordenadas = [...maq].sort((a, b) => {
@@ -141,6 +162,92 @@ export function CoreonLogin() {
     try {
       await svc.deletarLinha('coreon_senha', `usuario=eq.${encodeURIComponent(usuario)}`)
       setMsg(`✅ Senha de ${usuario} resetada.`)
+      await carregar()
+    } catch (e) {
+      setErro((e as Error).message)
+    } finally {
+      setOcupado(null)
+    }
+  }
+
+  // Máquinas conhecidas, as do usuário escolhido primeiro.
+  const dispOrdenados = useMemo(() => {
+    const u = novoUsuario.trim().toLowerCase()
+    return [...dispositivos].sort((a, b) => {
+      const ma = String(a.usuario ?? '').toLowerCase() === u ? 0 : 1
+      const mb = String(b.usuario ?? '').toLowerCase() === u ? 0 : 1
+      return ma - mb
+    })
+  }, [dispositivos, novoUsuario])
+
+  async function autorizarDireto() {
+    if (!svc || !config) return
+    const usuario = novoUsuario.trim().toLowerCase()
+    const d = dispositivos.find(x => String(x.id) === novoDisp)
+    if (!usuario || !d) {
+      setErro('Escolha o usuário e a máquina.')
+      return
+    }
+    setOcupado('direto-maq')
+    setErro(null)
+    setMsg(null)
+    try {
+      // Upsert: se já havia pedido (pendente/bloqueada) para o par, vira autorizada.
+      await svc.salvarLinha(
+        'coreon_maquina',
+        {
+          usuario,
+          dispositivo: String(d.id),
+          status: 'autorizada',
+          maquina: d.maquina ?? null,
+          autorizado_em: new Date().toISOString(),
+          autorizado_por: config.usuario ?? '',
+        },
+        'usuario,dispositivo',
+      )
+      setMsg(`✅ Máquina ${String(d.maquina ?? d.id)} autorizada para ${usuario}.`)
+      await carregar()
+    } catch (e) {
+      setErro((e as Error).message)
+    } finally {
+      setOcupado(null)
+    }
+  }
+
+  async function definirSenhaDireto() {
+    if (!svc) return
+    const usuario = novoUsuario.trim().toLowerCase()
+    if (!usuario) {
+      setErro('Escolha o usuário.')
+      return
+    }
+    // Mesmo mínimo do COREON_DEFINIR_SENHA na lnf-api.
+    if (novaSenha.length < 6) {
+      setErro('A senha precisa de pelo menos 6 caracteres.')
+      return
+    }
+    if (novaSenha !== novaSenha2) {
+      setErro('As duas senhas não conferem.')
+      return
+    }
+    if (
+      comSenha.has(usuario) &&
+      !window.confirm(`${usuario} já tem senha. Trocar pela nova?`)
+    )
+      return
+    setOcupado('direto-senha')
+    setErro(null)
+    setMsg(null)
+    try {
+      const h = await hashSenhaCoreon(novaSenha)
+      await svc.salvarLinha(
+        'coreon_senha',
+        { usuario, ...h, atualizado_em: new Date().toISOString() },
+        'usuario',
+      )
+      setNovaSenha('')
+      setNovaSenha2('')
+      setMsg(`✅ Senha de ${usuario} definida. Passe a senha a ele: o host vai pedi-la na próxima abertura numa máquina autorizada.`)
       await carregar()
     } catch (e) {
       setErro((e as Error).message)
@@ -238,6 +345,92 @@ export function CoreonLogin() {
             }`}
           >
             {loginOn === null ? '—' : loginOn ? 'LIGADO' : 'DESLIGADO'}
+          </button>
+        </div>
+      </section>
+
+      {/* ── Cadastro direto ── */}
+      <section className="bg-zinc-900 border border-zinc-800 rounded-lg p-4 space-y-3">
+        <div>
+          <h3 className="font-semibold">Cadastrar sem pedido</h3>
+          <p className="text-xs text-zinc-500 mt-0.5">
+            Autoriza uma máquina e define a senha sem esperar o pedido do host. A máquina precisa já ter
+            aberto o Lançador uma vez (aparece em <span className="font-mono">dispositivos</span>).
+          </p>
+        </div>
+
+        <label className="block text-xs text-zinc-400">
+          Usuário
+          <input
+            list="coreon-usuarios"
+            value={novoUsuario}
+            onChange={e => setNovoUsuario(e.target.value)}
+            placeholder="usuário do Windows"
+            className="mt-1 w-full bg-zinc-800 border border-zinc-700 rounded px-2 py-1.5 text-sm text-zinc-100"
+          />
+          <datalist id="coreon-usuarios">
+            {usuarios.map(u => (
+              <option key={String(u.username)} value={String(u.username)}>
+                {u.ativo === false ? 'inativo' : ''}
+              </option>
+            ))}
+          </datalist>
+        </label>
+
+        <div className="flex gap-2 items-end">
+          <label className="flex-1 block text-xs text-zinc-400">
+            Máquina
+            <select
+              value={novoDisp}
+              onChange={e => setNovoDisp(e.target.value)}
+              className="mt-1 w-full bg-zinc-800 border border-zinc-700 rounded px-2 py-1.5 text-sm text-zinc-100"
+            >
+              <option value="">— escolha —</option>
+              {dispOrdenados.map(d => (
+                <option key={String(d.id)} value={String(d.id)}>
+                  {String(d.maquina ?? '?')} · {String(d.usuario ?? '?')} · host {String(d.versao_host ?? '?')} ·{' '}
+                  {quando(d.ultimo_em)}
+                  {d.assinatura_ok === false ? ' · assinatura NÃO confere' : ''}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button
+            onClick={() => void autorizarDireto()}
+            disabled={ocupado === 'direto-maq' || !novoUsuario.trim() || !novoDisp}
+            className="shrink-0 text-xs px-3 py-2 rounded bg-green-700 hover:bg-green-600 disabled:opacity-40 text-white"
+          >
+            Autorizar máquina
+          </button>
+        </div>
+
+        <div className="flex gap-2 items-end">
+          <label className="flex-1 block text-xs text-zinc-400">
+            Senha
+            <input
+              type="password"
+              autoComplete="new-password"
+              value={novaSenha}
+              onChange={e => setNovaSenha(e.target.value)}
+              className="mt-1 w-full bg-zinc-800 border border-zinc-700 rounded px-2 py-1.5 text-sm text-zinc-100"
+            />
+          </label>
+          <label className="flex-1 block text-xs text-zinc-400">
+            Repetir
+            <input
+              type="password"
+              autoComplete="new-password"
+              value={novaSenha2}
+              onChange={e => setNovaSenha2(e.target.value)}
+              className="mt-1 w-full bg-zinc-800 border border-zinc-700 rounded px-2 py-1.5 text-sm text-zinc-100"
+            />
+          </label>
+          <button
+            onClick={() => void definirSenhaDireto()}
+            disabled={ocupado === 'direto-senha' || !novoUsuario.trim() || !novaSenha}
+            className="shrink-0 text-xs px-3 py-2 rounded bg-sky-700 hover:bg-sky-600 disabled:opacity-40 text-white"
+          >
+            Definir senha
           </button>
         </div>
       </section>
