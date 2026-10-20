@@ -16,6 +16,7 @@ export type Page =
   | 'presenca'
   | 'termos'
   | 'foton'
+  | 'coreonlogin'
   | 'config'
 
 // ── as páginas viram DADO ────────────────────────────────────────────────────
@@ -39,6 +40,7 @@ const PAGINAS: Array<{ id: Page; rotulo: string }> = [
   { id: 'presenca',     rotulo: 'Presença' },
   { id: 'termos',       rotulo: 'Termos' },
   { id: 'foton',        rotulo: 'Fóton' },
+  { id: 'coreonlogin',  rotulo: 'Login Coreon' },
   { id: 'config',       rotulo: 'Configurações' },
 ]
 
