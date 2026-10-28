@@ -269,6 +269,7 @@ function Acessos({ linhas, api, agir }: PropsLista) {
 
   return (
     <div className="space-y-3">
+      <SenhaAdmin api={api} agir={agir} />
       <Cartao>
         <p className="text-sm font-medium">Liberar</p>
         <div className="grid sm:grid-cols-2 gap-2">
@@ -294,7 +295,7 @@ function Acessos({ linhas, api, agir }: PropsLista) {
         <label className={`flex items-center gap-2 text-sm ${novo.usuario.trim() ? 'text-zinc-300' : 'text-zinc-600'}`}>
           <input type="checkbox" checked={novo.admin && !!novo.usuario.trim()} disabled={!novo.usuario.trim()}
             onChange={(e) => setNovo({ ...novo, admin: e.target.checked })} />
-          Administrador: pode usar "Editar banco" no Fóton (só para usuário com nome)
+          Administrador: pode usar os recursos de administrador do Fóton (Editar banco, DWG) (só para usuário com nome)
         </label>
         <button
           onClick={() => void criar()}
@@ -527,6 +528,56 @@ function Registros({ linhas }: { linhas: Linha[] }) {
         ))}
       </div>
     </div>
+  )
+}
+
+// ── Senha de admin por recurso ───────────────────────────────────────────────
+//
+// Os recursos de administrador só aparecem para quem tem a flag "administrador". Aqui se escolhe, para cada um, se o
+// Fóton ainda pede a senha (confirma com o servidor; no login compartilhado, a senha pessoal) antes de abrir. Fica em
+// foton_ajustes "senha_admin" (JSON) e vale na próxima abertura do Fóton de cada um.
+
+const RECURSOS_ADMIN: [string, string][] = [
+  ['editarBanco', 'Editar banco (app e linha de comando)'],
+  ['dwg', 'DWG: Explorar DWG no app, FTPRODUTO e FTDADOS no AutoCAD'],
+]
+
+function SenhaAdmin({ api, agir }: Omit<PropsLista, 'linhas'>) {
+  const [mapa, setMapa] = useState<Record<string, boolean> | null>(null)
+  const [existe, setExiste] = useState(true)
+  useEffect(() => {
+    api.listar('ajustes').then(
+      (a) => {
+        const l = a.find((x) => x.chave === 'senha_admin')
+        setExiste(!!l)
+        try { setMapa(JSON.parse(String(l?.valor ?? '{}')) ?? {}) } catch { setMapa({}) }
+      },
+      () => setMapa({}),
+    )
+  }, [api])
+  const mudar = (recurso: string, pede: boolean) => {
+    const novo = { ...(mapa ?? {}), [recurso]: pede }
+    void agir(async () => {
+      await api.salvar('ajustes', { chave: 'senha_admin', valor: JSON.stringify(novo) })
+      setMapa(novo)
+    }, pede ? 'Passa a pedir a senha (na próxima abertura do Fóton).' : 'Não pede mais a senha (na próxima abertura do Fóton).')
+  }
+  return (
+    <Cartao>
+      <p className="text-sm font-medium">Recursos de administrador: pedir a senha?</p>
+      <p className="text-xs text-zinc-400">
+        Só quem é administrador vê estes recursos. Marcado: o Fóton confirma com o servidor (e pede a senha pessoal no login
+        compartilhado) antes de abrir. Desmarcado: abre direto para o administrador.
+      </p>
+      {!existe && <p className="text-xs text-amber-400">O ajuste "senha_admin" não existe no banco: nenhum recurso pede a senha.</p>}
+      {RECURSOS_ADMIN.map(([id, rotulo]) => (
+        <label key={id} className="flex items-center gap-2 text-sm text-zinc-300">
+          <input type="checkbox" checked={!!mapa?.[id]} disabled={mapa === null || !existe}
+            onChange={(e) => mudar(id, e.target.checked)} />
+          {rotulo}
+        </label>
+      ))}
+    </Cartao>
   )
 }
 
