@@ -18,6 +18,9 @@ type Row = Record<string, unknown>
 //     (a máquina passa a poder definir senha e logar) ou BLOQUEIA.
 //   • senha do usuário (coreon_senha): aqui você RESETA — apaga a senha, e no
 //     próximo login o usuário define outra (a máquina segue autorizada).
+//   • senha BLOQUEADA: 5 erros seguidos bloqueiam a senha na lnf-api (0087;
+//     falhas/bloqueada_em). DESBLOQUEAR zera a contagem e mantém a senha;
+//     resetar ou definir uma senha nova também desbloqueia.
 //   • cadastro DIRETO, sem esperar pedido: autoriza para um usuário qualquer
 //     máquina que já apareceu em 'dispositivos' (qualquer host 2.0.0.x que
 //     assina registra a máquina no PAYLOAD), e define a senha dele. O hash é
@@ -82,6 +85,15 @@ export function CoreonLogin() {
     return set
   }, [senhas])
 
+  const senhaBloqueada = useMemo(() => {
+    const set = new Set<string>()
+    for (const s of senhas) {
+      const u = typeof s.usuario === 'string' ? s.usuario : ''
+      if (u && s.bloqueada_em != null) set.add(u.toLowerCase())
+    }
+    return set
+  }, [senhas])
+
   const carregar = useCallback(async () => {
     if (!svc) return
     setCarregando(true)
@@ -91,7 +103,11 @@ export function CoreonLogin() {
       const [ac, maq, sen, disp, usu] = await Promise.all([
         svc.lerLinhas('app_control', { select: '*', limit: 1 }),
         svc.lerLinhas('coreon_maquina', { order: 'solicitado_em.desc', limit: 1000 }),
-        svc.lerLinhas('coreon_senha', { select: 'usuario,atualizado_em', order: 'atualizado_em.desc', limit: 1000 }),
+        svc.lerLinhas('coreon_senha', {
+          select: 'usuario,atualizado_em,falhas,bloqueada_em',
+          order: 'atualizado_em.desc',
+          limit: 1000,
+        }),
         svc.lerLinhas('dispositivos', {
           select: 'id,usuario,maquina,versao_host,assinatura_ok,ultimo_em',
           order: 'ultimo_em.desc',
@@ -174,6 +190,29 @@ export function CoreonLogin() {
     }
   }
 
+  // Zera a contagem de erros e tira o bloqueio; a senha continua a mesma.
+  // UPDATE e não upsert: o upsert montaria uma linha sem senha_hash (NOT NULL).
+  async function desbloquearSenha(usuario: string) {
+    if (!svc) return
+    if (!window.confirm(`Desbloquear a senha do Coreon de "${usuario}"?\n\nA senha continua a mesma; a contagem de erros volta a zero.`))
+      return
+    setOcupado('desbloq|' + usuario)
+    setErro(null)
+    setMsg(null)
+    try {
+      await svc.atualizarLinha('coreon_senha', `usuario=eq.${encodeURIComponent(usuario)}`, {
+        falhas: 0,
+        bloqueada_em: null,
+      })
+      setMsg(`✅ Senha de ${usuario} desbloqueada.`)
+      await carregar()
+    } catch (e) {
+      setErro((e as Error).message)
+    } finally {
+      setOcupado(null)
+    }
+  }
+
   // Máquinas conhecidas, as do usuário escolhido primeiro.
   const dispOrdenados = useMemo(() => {
     const u = novoUsuario.trim().toLowerCase()
@@ -246,7 +285,8 @@ export function CoreonLogin() {
       const h = await hashSenhaCoreon(novaSenha)
       await svc.salvarLinha(
         'coreon_senha',
-        { usuario, ...h, atualizado_em: new Date().toISOString() },
+        // Senha nova zera os erros e tira o bloqueio, como na lnf-api.
+        { usuario, ...h, atualizado_em: new Date().toISOString(), falhas: 0, bloqueada_em: null },
         'usuario',
       )
       setNovaSenha('')
@@ -530,6 +570,9 @@ export function CoreonLogin() {
                       {comSenha.has(u.toLowerCase()) && (
                         <span className="text-[11px] text-zinc-400 border border-zinc-700 rounded px-1.5 py-0.5">com senha</span>
                       )}
+                      {senhaBloqueada.has(u.toLowerCase()) && (
+                        <span className={`text-[11px] border rounded px-1.5 py-0.5 ${BADGE.bloqueada}`}>senha bloqueada</span>
+                      )}
                     </div>
                     <div className="text-[11px] text-zinc-500 mt-1 space-x-3">
                       <span>{String(m.maquina ?? '—')}</span>
@@ -567,6 +610,15 @@ export function CoreonLogin() {
                         className="text-xs px-2.5 py-1.5 rounded bg-zinc-700 hover:bg-zinc-600 disabled:opacity-40 text-zinc-200"
                       >
                         Pendente
+                      </button>
+                    )}
+                    {senhaBloqueada.has(u.toLowerCase()) && (
+                      <button
+                        onClick={() => void desbloquearSenha(u)}
+                        disabled={ocupado === 'desbloq|' + u}
+                        className="text-xs px-2.5 py-1.5 rounded bg-green-700 hover:bg-green-600 disabled:opacity-40 text-white"
+                      >
+                        Desbloquear senha
                       </button>
                     )}
                     {comSenha.has(u.toLowerCase()) && (
