@@ -8,6 +8,7 @@ import {
   convsToJson,
   escreverConv,
   explicarMotivo,
+  normalizarUmb,
   reconstruirConvs,
   resolverConv,
   testarInversao,
@@ -314,10 +315,13 @@ const TOL_VALOR_ITEM = 0.5
 // esta máquina carregou). Na dúvida o caso FICA: fila com item a mais é
 // incômodo, fila com item a menos é problema perdido.
 function resolvidoNoCadastro(c: Caso, itens: ItensJson | null): boolean | null {
-  // Só o tipo 'conversao'. O 'umb_migo' nasce de outro sintoma — quantidade que
-  // ficou quebrada depois de converter, ou recusa do SAP por unidade — e nenhum
-  // dos dois se confere relendo o cadastro. Encerrar por analogia seria chutar.
-  if (c.tipo !== 'conversao') return false
+  // 'umb_migo' só quando nasceu de quantidade FRACIONADA e a linha tem o lado
+  // cru da NF: aí dá para refazer a conta do Coreon com o cadastro de agora
+  // (abaixo). A recusa do SAP por unidade (erro_sap) não se confere relendo o
+  // cadastro — encerrar por analogia seria chutar.
+  if (c.tipo === 'umb_migo') {
+    if (c.motivo !== 'fracionada' || semLadoCru(c)) return false
+  } else if (c.tipo !== 'conversao') return false
   if (!itens) return null
 
   const kForn = acharChave(itens as unknown as Record<string, unknown>, c.fornecedor)
@@ -337,10 +341,35 @@ function resolvidoNoCadastro(c: Caso, itens: ItensJson | null): boolean | null {
   if (!Number.isFinite(conversao) || conversao === 0) return false
 
   const qtdSap = c.qtdNf / conversao
+
+  // ── unidade: a quantidade que o MIGO receberia agora é inteira? ──────────
+  //
+  // A mesma conta do ExecutarService: qtdSAP = qtdNF / conversão e, havendo
+  // UmbMigo, × o fator dela (ResolverFatorUmbMigo). Era a quantidade quebrada
+  // que abria o caso; inteira com o cadastro de hoje, o caso acabou — típico de
+  // quando o que estava errado era a conversão, corrigida depois (ou pelo caso
+  // de conversão irmão, que fecha sozinho e deixava este para trás).
+  if (c.tipo === 'umb_migo') {
+    if (!venc) return false   // nenhuma conversão vale: nada mudou a conta
+    const umbMigo = (item.UmbMigo ?? '').trim()
+    const qtd = umbMigo ? qtdSap * fatorUmbMigo(convs, umbMigo) : qtdSap
+    if (!Number.isFinite(qtd) || qtd <= 0) return null
+    return Math.abs(qtd - Math.round(qtd)) <= 1e-6 * Math.max(1, qtd)
+  }
   const dif = Math.abs((c.valorNf * conversao - c.valorPedido) * qtdSap)
   if (!Number.isFinite(dif)) return null
 
   return dif <= TOL_VALOR_ITEM
+}
+
+// O fator da UmbMigo nas conversões da referência — o ResolverFatorUmbMigo do
+// ExecutarService: 'para' = UmbMigo → fator; 'de' = UmbMigo → 1/fator; senão 1.
+// Universais não contam.
+function fatorUmbMigo(convs: ConvEditavel[], umbMigo: string): number {
+  const u = normalizarUmb(umbMigo)
+  for (const c of convs) if (c.para && normalizarUmb(c.para) === u) return c.fator > 0 ? c.fator : 1
+  for (const c of convs) if (c.de && normalizarUmb(c.de) === u) return c.fator > 0 ? 1 / c.fator : 1
+  return 1
 }
 
 // Por que um caso foi fechado. É o campo que separa falso positivo do detector
@@ -979,6 +1008,10 @@ export function ConversoesPendentes() {
       item.referencias[alvo] = convsToJson(convs)
 
       await gravarItens(novo, `conversões de ${sel.fornecedor}/${sel.codigo} (${alvo})`)
+
+      // Caso de unidade cuja quantidade já fecha inteira com a conversão nova:
+      // não há UmbMigo a escolher — o que estava errado era a conversão.
+      if (!encerrar && resolvidoNoCadastro(sel, novo) === true) encerrar = true
 
       if (!encerrar) {
         setStatus('✅ Conversão gravada. O caso segue aberto — grave a UmbMigo para encerrar.')
