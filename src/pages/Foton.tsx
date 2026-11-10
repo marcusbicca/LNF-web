@@ -70,12 +70,13 @@ export function Foton() {
 
   // Toda ação: grava, mostra o resultado e recarrega a lista.
   const agir = useCallback(
-    async (acao: () => Promise<unknown>, ok: string) => {
+    // ok pode ser calculado depois da ação (ex.: "3 versões excluídas; 1 falhou").
+    async (acao: () => Promise<unknown>, ok: string | (() => string)) => {
       setErro(null)
       setAviso(null)
       try {
         await acao()
-        setAviso(ok)
+        setAviso(typeof ok === 'function' ? ok() : ok)
         await carregar()
       } catch (e) {
         setErro((e as Error).message)
@@ -164,7 +165,7 @@ export function Foton() {
 type PropsLista = {
   linhas: Linha[]
   api: FotonAdmin
-  agir: (acao: () => Promise<unknown>, ok: string) => Promise<void>
+  agir: (acao: () => Promise<unknown>, ok: string | (() => string)) => Promise<void>
 }
 
 // ── Conexão ──────────────────────────────────────────────────────────────────
@@ -617,6 +618,43 @@ function Versoes({ linhas, api, agir }: PropsLista) {
   const beta = linhas.find((l) => l.situacao === 'beta')
   const tamanho = (n: unknown) => `${(Number(n) / 1024).toFixed(0)} KB`
 
+  // Excluir várias de uma vez: só as disponíveis (a liberada e a beta não saem por aqui).
+  const excluiveis = linhas.filter((l) => l.situacao !== 'liberada' && l.situacao !== 'beta').map((l) => String(l.versao))
+  const [marcadas, setMarcadas] = useState<Set<string>>(new Set())
+  useEffect(() => {
+    const vale = new Set(linhas.filter((l) => l.situacao !== 'liberada' && l.situacao !== 'beta').map((l) => String(l.versao)))
+    setMarcadas((m) => new Set([...m].filter((v) => vale.has(v))))
+  }, [linhas])
+  const marcar = (v: string, sim: boolean) =>
+    setMarcadas((m) => {
+      const n = new Set(m)
+      if (sim) n.add(v)
+      else n.delete(v)
+      return n
+    })
+  const todasMarcadas = excluiveis.length > 0 && excluiveis.every((v) => marcadas.has(v))
+  const excluirMarcadas = () => {
+    const lista = excluiveis.filter((v) => marcadas.has(v))
+    if (lista.length === 0) return
+    const nomes = lista.length <= 8 ? `\n\n${lista.join('\n')}` : ''
+    if (!confirm(`Excluir ${lista.length} ${lista.length === 1 ? 'versão' : 'versões'}?${nomes}`)) return
+    const falhas: string[] = []
+    void agir(async () => {
+      for (const v of lista) {
+        try {
+          await api.excluir('versoes', v)
+        } catch (e) {
+          falhas.push(`${v} (${(e as Error).message})`)
+        }
+      }
+      if (falhas.length === lista.length) throw new Error(`Nenhuma versão excluída: ${falhas.join('; ')}`)
+      setMarcadas(new Set())
+    }, () => {
+      const n = lista.length - falhas.length
+      return `${n} ${n === 1 ? 'versão excluída' : 'versões excluídas'}.` + (falhas.length ? ` Não excluídas: ${falhas.join('; ')}` : '')
+    })
+  }
+
   return (
     <div className="space-y-3">
       <Cartao>
@@ -667,10 +705,29 @@ function Versoes({ linhas, api, agir }: PropsLista) {
         </p>
       </Cartao>
 
+      {excluiveis.length > 0 && (
+        <div className="flex flex-wrap items-center gap-3 text-sm">
+          <label className="flex items-center gap-2">
+            <input type="checkbox" checked={todasMarcadas}
+              onChange={(e) => setMarcadas(e.target.checked ? new Set(excluiveis) : new Set())} />
+            Selecionar todas as disponíveis ({excluiveis.length})
+          </label>
+          <span className="ml-auto">
+            <BotaoPequeno perigo disabled={marcadas.size === 0} onClick={excluirMarcadas}>
+              Excluir selecionadas{marcadas.size ? ` (${marcadas.size})` : ''}
+            </BotaoPequeno>
+          </span>
+        </div>
+      )}
+
       {linhas.length === 0 && <Vazio>Nenhuma versão publicada. O CI publica cada build protegido (segredo FOTON_CHAVE_MESTRA no GitHub).</Vazio>}
       {linhas.map((l) => (
         <Cartao key={String(l.versao)} alerta={false}>
           <div className="flex flex-wrap items-center gap-2 text-sm">
+            {excluiveis.includes(String(l.versao)) && (
+              <input type="checkbox" aria-label={`Selecionar ${String(l.versao)}`} checked={marcadas.has(String(l.versao))}
+                onChange={(e) => marcar(String(l.versao), e.target.checked)} />
+            )}
             <span className="font-mono">{String(l.versao)}</span>
             {l.situacao === 'liberada'
               ? <span className="ml-auto text-xs text-green-400">liberada</span>
